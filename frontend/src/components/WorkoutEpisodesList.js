@@ -1,16 +1,37 @@
-import React from 'react';
-import { FiClock, FiZap, FiHeart, FiPlay } from 'react-icons/fi';
+import React, { useContext } from 'react';
+import { FiClock, FiZap, FiHeart, FiPlay, FiTrash2 } from 'react-icons/fi';
+import { WorkoutContext } from '../context/WorkoutContext';
 
 const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDark }) => {
+  const { deleteWorkout } = useContext(WorkoutContext);
+
+  const handleDelete = async (e, workoutId) => {
+    e.stopPropagation();
+    if (window.confirm('Are you sure you want to delete this workout?')) {
+      try {
+        await deleteWorkout(workoutId);
+      } catch (err) {
+        console.error('Failed to delete workout:', err);
+        alert('Failed to delete workout');
+      }
+    }
+  };
+
   const formatDate = (date) => {
+    // Handle cases where date is undefined or invalid
+    if (!date) return 'Recently';
+    
+    const parsedDate = new Date(date);
+    if (isNaN(parsedDate.getTime())) return 'Recently';
+    
     const now = new Date();
-    const diffTime = Math.abs(now - date);
+    const diffTime = Math.abs(now - parsedDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    return parsedDate.toLocaleDateString();
   };
 
   return (
@@ -22,10 +43,10 @@ const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDar
       <div className="space-y-3">
         {workouts.map((workout) => (
           <button
-            key={workout.id}
+            key={workout._id || workout.id}
             onClick={() => onSelectWorkout(workout)}
-            className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
-              selectedWorkout?.id === workout.id
+            className={`w-full text-left p-4 rounded-lg border-2 transition-all group ${
+              selectedWorkout?._id === workout._id || selectedWorkout?.id === workout.id
                 ? isDark
                   ? 'bg-slate-700 border-blue-500 shadow-lg'
                   : 'bg-blue-50 border-blue-400 shadow-lg'
@@ -60,7 +81,7 @@ const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDar
                 </div>
               </div>
 
-              <div className="flex items-center gap-4 text-right">
+              <div className="flex items-center gap-2 text-right">
                 <div className="hidden sm:flex flex-col items-end gap-2">
                   <div className="flex items-center gap-1">
                     <FiClock size={16} className={isDark ? 'text-blue-400' : 'text-blue-600'} />
@@ -78,7 +99,7 @@ const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDar
 
                 <div className="flex items-center gap-1 px-3 py-1 rounded-full"
                   style={{
-                    backgroundColor: selectedWorkout?.id === workout.id
+                    backgroundColor: selectedWorkout?._id === workout._id || selectedWorkout?.id === workout.id
                       ? isDark ? '#064e3b' : '#d1fae5'
                       : isDark ? '#334155' : '#f3f4f6'
                   }}>
@@ -87,6 +108,18 @@ const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDar
                     {workout.avgHeartRate}
                   </span>
                 </div>
+
+                <button
+                  onClick={(e) => handleDelete(e, workout._id || workout.id)}
+                  className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${
+                    isDark
+                      ? 'hover:bg-red-900 text-red-400'
+                      : 'hover:bg-red-100 text-red-600'
+                  }`}
+                  title="Delete workout"
+                >
+                  <FiTrash2 size={16} />
+                </button>
               </div>
             </div>
           </button>

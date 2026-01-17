@@ -1,7 +1,7 @@
 import React, { useRef, useState, Suspense, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, Line, Grid } from '@react-three/drei';
-import { FiPlay, FiPause, FiSkipBack, FiSkipForward, FiRotateCw } from 'react-icons/fi';
+import { FiRotateCw } from 'react-icons/fi';
 import * as THREE from 'three';
 
 // Skeleton component that renders in 3D space
@@ -123,27 +123,33 @@ const Skeleton3D = ({ skeletonData, currentTimeIdx, isDark }) => {
 };
 
 const SkeletonVisualization3D = ({ skeletonData, isDark }) => {
-  const [currentTimeIdx, setCurrentTimeIdx] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
-  const maxTimePoints = skeletonData[0]?.data.length || 20;
-
-  // Auto-play animation
+  // Update elapsed time every second
   useEffect(() => {
-    if (!isPlaying) return;
+    const id = setInterval(() => {
+      setElapsedTime((t) => t + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
 
-    const interval = setInterval(() => {
-      setCurrentTimeIdx((prev) => (prev + 1) % maxTimePoints);
-    }, 100);
-
-    return () => clearInterval(interval);
-  }, [isPlaying, maxTimePoints]);
+  const formatTime = (seconds) => {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
     <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-      <h3 className={`text-lg font-semibold mb-6 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-        3D Skeleton Visualization
-      </h3>
+      <div className="flex items-center justify-between mb-6">
+        <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+          3D Skeleton Visualization
+        </h3>
+        <span className={`text-sm font-mono ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+          ⏱ {formatTime(elapsedTime)}
+        </span>
+      </div>
 
       {/* Three.js Canvas */}
       <div className={`rounded-lg overflow-hidden mb-6 ${isDark ? 'bg-slate-900' : 'bg-gray-100'}`} style={{ height: '500px' }}>
@@ -166,7 +172,7 @@ const SkeletonVisualization3D = ({ skeletonData, isDark }) => {
             <pointLight position={[10, -5, 5]} intensity={0.3} color={isDark ? '#10b981' : '#059669'} />
 
             {/* Skeleton */}
-            <Skeleton3D skeletonData={skeletonData} currentTimeIdx={currentTimeIdx} isDark={isDark} />
+            <Skeleton3D skeletonData={skeletonData} currentTimeIdx={0} isDark={isDark} />
 
             {/* Camera Controls */}
             <OrbitControls
@@ -195,7 +201,7 @@ const SkeletonVisualization3D = ({ skeletonData, isDark }) => {
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {skeletonData.map((keypoint) => {
-            const data = keypoint.data[currentTimeIdx];
+            const data = keypoint.data[0];
             const confidence = data ? Math.round(data.confidence * 100) : 0;
 
             return (
@@ -211,67 +217,6 @@ const SkeletonVisualization3D = ({ skeletonData, isDark }) => {
             );
           })}
         </div>
-      </div>
-
-      {/* Time Series Slider */}
-      <div className={`mb-6 p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-100'}`}>
-        <div className="flex items-center justify-between mb-4">
-          <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-            Frame: {currentTimeIdx.toString().padStart(2, '0')} / {maxTimePoints}
-          </span>
-          <div className="flex-1 max-w-xs h-2 rounded-full ml-4" style={{ backgroundColor: isDark ? '#1e293b' : '#e5e7eb' }}>
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${(currentTimeIdx / maxTimePoints) * 100}%`,
-                backgroundColor: '#10b981'
-              }}
-            ></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="flex items-center justify-center gap-3">
-        <button
-          onClick={() => setCurrentTimeIdx(Math.max(0, currentTimeIdx - 1))}
-          className={`p-2 rounded-lg transition-colors ${
-            isDark ? 'hover:bg-slate-700 text-green-400' : 'hover:bg-gray-200 text-green-600'
-          }`}
-          disabled={currentTimeIdx === 0}
-        >
-          <FiSkipBack size={20} />
-        </button>
-
-        <button
-          onClick={() => setIsPlaying(!isPlaying)}
-          className={`p-3 rounded-lg transition-colors ${
-            isDark ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-          }`}
-        >
-          {isPlaying ? <FiPause size={20} /> : <FiPlay size={20} />}
-        </button>
-
-        <button
-          onClick={() => setCurrentTimeIdx(Math.min(maxTimePoints - 1, currentTimeIdx + 1))}
-          className={`p-2 rounded-lg transition-colors ${
-            isDark ? 'hover:bg-slate-700 text-green-400' : 'hover:bg-gray-200 text-green-600'
-          }`}
-          disabled={currentTimeIdx === maxTimePoints - 1}
-        >
-          <FiSkipForward size={20} />
-        </button>
-
-        <button
-          onClick={() => setCurrentTimeIdx(0)}
-          className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-            isDark
-              ? 'bg-slate-700 hover:bg-slate-600 text-gray-300'
-              : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
-          }`}
-        >
-          Reset
-        </button>
       </div>
     </div>
   );

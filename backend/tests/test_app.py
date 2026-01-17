@@ -1,4 +1,8 @@
-from backend.app import create_app
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app import create_app
 import numpy as np
 
 def main():
@@ -8,7 +12,7 @@ def main():
 
     print("Valid matrix:")
     matrix = np.random.rand(13, 9).tolist()
-    response = client.get("/stats", json={"matrix": matrix})
+    response = client.post("/stats", json={"matrix": matrix})
     print(response.status_code, response.get_json())
 
 

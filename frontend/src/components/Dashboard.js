@@ -1,4 +1,5 @@
 import React, { useContext, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
 import { FiPlayCircle } from 'react-icons/fi';
@@ -12,9 +13,10 @@ import './Dashboard.css';
 
 const Dashboard = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
-  const { workouts, activeSession } = useContext(WorkoutContext);
+  const { workouts, activeSession, addWorkout } = useContext(WorkoutContext);
   const [selectedWorkout, setSelectedWorkout] = useState(workouts[0]);
   const [showNewSession, setShowNewSession] = useState(false);
+  const navigate = useNavigate();
 
   return (
     <div className={`min-h-screen transition-colors duration-300 ${isDark ? 'bg-slate-900' : 'bg-gradient-to-br from-blue-50 to-green-50'}`}>
@@ -38,7 +40,35 @@ const Dashboard = () => {
               <div className={`rounded-lg shadow-lg p-6 h-full ${isDark ? 'bg-gradient-to-br from-blue-900 to-green-900' : 'bg-gradient-to-br from-blue-500 to-green-500'}`}>
                 <h3 className="text-white font-semibold text-lg mb-4">Start New Session</h3>
                 <button
-                  onClick={() => setShowNewSession(!showNewSession)}
+                  onClick={async () => {
+                    try {
+                      // Create a new workout via WorkoutContext (which calls backend API)
+                      const workoutData = {
+                        name: 'New Workout Session',
+                        type: 'Running',
+                        duration: 0,
+                        distance: 0,
+                        calories: 0,
+                        status: 'in-progress',
+                        avgHeartRate: 0,
+                        maxHeartRate: 0,
+                        steps: 0,
+                        videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
+                        timeSeriesData: [],
+                        footPressureData: [],
+                        skeletonData: []
+                      };
+
+                      const newWorkout = await addWorkout(workoutData);
+                      console.log('Created workout:', newWorkout);
+                      
+                      // Navigate to the new episode detail page
+                      navigate(`/episode/${newWorkout._id || newWorkout.id}`);
+                    } catch (e) {
+                      console.error('Failed to create workout:', e.message);
+                      alert('Failed to start session. Please try again.');
+                    }
+                  }}
                   className="w-full bg-white text-blue-600 font-semibold py-3 px-4 rounded-lg hover:shadow-lg transition flex items-center justify-center gap-2"
                 >
                   <FiPlayCircle size={20} />

@@ -1,0 +1,173 @@
+"""
+MongoDB database connection and utilities
+"""
+import os
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+from dotenv import load_dotenv
+from bson import ObjectId
+from datetime import datetime
+
+# Load environment variables
+load_dotenv()
+
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+# Global variables
+client = None
+db = None
+workouts_collection = None
+sessions_collection = None
+mongodb_available = False
+
+if MONGODB_URI:
+    try:
+        # Initialize MongoDB client
+        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+
+        # Verify connection
+        client.admin.command('ping')
+        print("✓ Connected to MongoDB successfully")
+
+        # Database and collections
+        db = client['kinetra']
+        workouts_collection = db['workouts']
+        sessions_collection = db['sessions']
+        mongodb_available = True
+
+    except Exception as e:
+        print(f"⚠ MongoDB connection failed: {e}")
+        mongodb_available = False
+else:
+    print("⚠ MONGODB_URI not set - MongoDB unavailable")
+
+
+def serialize_doc(doc):
+    """Convert MongoDB document to JSON-serializable format"""
+    if doc is None:
+        return None
+    if isinstance(doc, dict):
+        doc = dict(doc)  # Create a copy
+        if '_id' in doc:
+            doc['_id'] = str(doc['_id'])
+        return doc
+    return doc
+
+
+def create_workout(workout_data):
+    """Create a new workout in the database"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+    
+    workout = {
+        **workout_data,
+        'created_at': datetime.utcnow(),
+        'updated_at': datetime.utcnow()
+    }
+    result = workouts_collection.insert_one(workout)
+    return serialize_doc(workouts_collection.find_one({'_id': result.inserted_id}))
+
+
+def get_all_workouts():
+    """Fetch all workouts from the database"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+
+    workouts = list(workouts_collection.find().sort('created_at', -1))
+    return [serialize_doc(w) for w in workouts]
+
+
+def get_workout_by_id(workout_id):
+    """Fetch a specific workout by ID"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+
+    try:
+        workout = workouts_collection.find_one({'_id': ObjectId(workout_id)})
+        return serialize_doc(workout)
+    except Exception as e:
+        raise e
+
+
+def update_workout(workout_id, updates):
+    """Update a workout in the database"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+    
+    try:
+        result = workouts_collection.find_one_and_update(
+            {'_id': ObjectId(workout_id)},
+            {'$set': {**updates, 'updated_at': datetime.utcnow()}},
+            return_document=True
+        )
+        return serialize_doc(result)
+    except:
+        return None
+
+
+def delete_workout(workout_id):
+    """Delete a workout from the database"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+    
+    try:
+        result = workouts_collection.delete_one({'_id': ObjectId(workout_id)})
+        return result.deleted_count > 0
+    except:
+        return False
+
+
+def save_session_stats(session_id, stats_data):
+    """Save session statistics to the database"""
+    if not mongodb_available:
+        raise Exception("MongoDB not available")
+
+    session = {
+        'session_id': session_id,
+        'stats': stats_data,
+        'timestamp': datetime.utcnow()
+    }
+    result = sessions_collection.insert_one(session)
+    return str(result.inserted_id)
+
+
+def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None, timestamp=None):
+    """Save pressure data and calculated stats for a workout.
+
+    Args:
+        workout_id: ID of the workout/session this frame belongs to.
+        pressure_matrix: 2D list representing the 4x4 pressure matrix.
+        calculated_stats: Dict of region stats calculated on the backend.
+        nodes: Optional list of node objects with positions and pressures.
+        timestamp: Optional epoch ms or ISO timestamp for the frame.
+    """
+    if not mongodb_available or sessions_collection is None:
+        raise Exception("MongoDB not available")
+
+    try:
+        # Normalize timestamp: if provided, convert epoch ms to datetime; else use server time
+        if timestamp is None:
+            ts = datetime.utcnow()
+        elif isinstance(timestamp, (int, float)):
+            ts = datetime.utcfromtimestamp(timestamp / 1000.0)
+        else:
+            ts = timestamp
+
+        # Create pressure frame document
+        pressure_frame = {
+            'workout_id': str(workout_id),
+            'pressure_matrix': pressure_matrix,
+            'calculated_stats': calculated_stats,
+            'timestamp': ts,
+        }
+
+        # Include nodes if provided
+        if nodes is not None:
+            pressure_frame['nodes'] = nodes
+
+        # Insert the pressure frame
+        result = sessions_collection.insert_one(pressure_frame)
+        return str(result.inserted_id)
+    except Exception as e:
+        print(f"Error saving pressure data: {e}")
+        raise e

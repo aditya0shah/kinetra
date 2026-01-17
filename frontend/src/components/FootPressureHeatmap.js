@@ -1,13 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { FiPlay, FiPause, FiSkipBack, FiSkipForward } from 'react-icons/fi';
 import usePressureGrid from '../hooks/usePressureGrid';
 
-const FootPressureHeatmap = ({ footPressureData, isDark }) => {
+const FootPressureHeatmap = ({ footPressureData, isDark, isPaused, onPauseToggle }) => {
   const canvasRef = useRef(null);
-  const [currentTimeIdx, setCurrentTimeIdx] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
-  const maxTimePoints = footPressureData[0]?.data.length || 20;
+  // Handle undefined or empty footPressureData
+  const data = Array.isArray(footPressureData) && footPressureData.length > 0 
+    ? footPressureData 
+    : [];
 
   const getPressureColor = (pressure) => {
     const p = Math.min(Math.max(pressure, 0), 100);
@@ -17,7 +18,7 @@ const FootPressureHeatmap = ({ footPressureData, isDark }) => {
     return '#ef4444'; // Red
   };
 
-  const { grid, dims } = usePressureGrid(footPressureData, currentTimeIdx, { gridCols: 4, gridRows: 4 });
+  const { grid, dims } = usePressureGrid(data, 0, { gridCols: 4, gridRows: 4 });
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -82,21 +83,51 @@ const FootPressureHeatmap = ({ footPressureData, isDark }) => {
   useEffect(() => {
     draw();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTimeIdx, isDark, grid, dims]);
+  }, [isDark, grid, dims]);
 
+  // Update elapsed time every second
   useEffect(() => {
-    if (!isPlaying) return;
     const id = setInterval(() => {
-      setCurrentTimeIdx((t) => (t + 1) % maxTimePoints);
-    }, 120);
+      setElapsedTime((t) => t + 1);
+    }, 1000);
     return () => clearInterval(id);
-  }, [isPlaying, maxTimePoints]);
+  }, []);
+
+  const formatTime = (seconds) => {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
     <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-      <h3 className={`text-lg font-semibold mb-4 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-        Foot Pressure Heatmap (2D)
-      </h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+          Foot Pressure Heatmap (2D)
+        </h3>
+        <div className="flex items-center gap-3">
+          <span className={`text-sm font-mono ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+            ⏱ {formatTime(elapsedTime)}
+          </span>
+          {onPauseToggle && (
+            <button
+              onClick={onPauseToggle}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
+                isPaused
+                  ? isDark
+                    ? 'bg-green-900 hover:bg-green-800 text-green-300'
+                    : 'bg-green-100 hover:bg-green-200 text-green-700'
+                  : isDark
+                  ? 'bg-orange-900 hover:bg-orange-800 text-orange-300'
+                  : 'bg-orange-100 hover:bg-orange-200 text-orange-700'
+              }`}
+            >
+              {isPaused ? 'Resume' : 'Pause'}
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Canvas */}
       <div className={`rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
@@ -123,55 +154,10 @@ const FootPressureHeatmap = ({ footPressureData, isDark }) => {
         </div>
       </div>
 
-      {/* Time Series Display */}
-      <div className={`mb-4 p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-100'}`}>
-        <div className="flex items-center justify-between">
-          <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-            Time: {currentTimeIdx.toString().padStart(2, '0')}s
-          </span>
-          <div className="w-full max-w-xs h-2 rounded-full" style={{ backgroundColor: isDark ? '#1e293b' : '#e5e7eb' }}>
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${(currentTimeIdx / maxTimePoints) * 100}%`, backgroundColor: '#3b82f6' }}
-            ></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="flex items-center justify-center gap-3">
-        <button
-          onClick={() => setCurrentTimeIdx(Math.max(0, currentTimeIdx - 1))}
-          className={`p-2 rounded-lg transition-colors ${isDark ? 'hover:bg-slate-700 text-blue-400' : 'hover:bg-gray-200 text-blue-600'}`}
-          disabled={currentTimeIdx === 0}
-        >
-          <FiSkipBack size={20} />
-        </button>
-        <button
-          onClick={() => setIsPlaying(!isPlaying)}
-          className={`p-3 rounded-lg transition-colors ${isDark ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'}`}
-        >
-          {isPlaying ? <FiPause size={20} /> : <FiPlay size={20} />}
-        </button>
-        <button
-          onClick={() => setCurrentTimeIdx(Math.min(maxTimePoints - 1, currentTimeIdx + 1))}
-          className={`p-2 rounded-lg transition-colors ${isDark ? 'hover:bg-slate-700 text-blue-400' : 'hover:bg-gray-200 text-blue-600'}`}
-          disabled={currentTimeIdx === maxTimePoints - 1}
-        >
-          <FiSkipForward size={20} />
-        </button>
-        <button
-          onClick={() => setCurrentTimeIdx(0)}
-          className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isDark ? 'bg-slate-700 hover:bg-slate-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}
-        >
-          Reset
-        </button>
-      </div>
-
       {/* Pressure values grid */}
       <div className="grid grid-cols-4 gap-2 mt-4">
-        {footPressureData.map((node) => {
-          const pressure = node.data[currentTimeIdx]?.pressure || 0;
+        {data.length > 0 ? data.map((node) => {
+          const pressure = node.pressure || 0;
           const normalized = Math.min(pressure / 100, 1);
           let bgColor = '#10b981';
           if (normalized >= 0.75) bgColor = '#ef4444';
@@ -187,7 +173,11 @@ const FootPressureHeatmap = ({ footPressureData, isDark }) => {
               {Math.round(pressure)}
             </div>
           );
-        })}
+        }) : (
+          <div className={`col-span-4 text-center py-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+            No pressure data available
+          </div>
+        )}
       </div>
     </div>
   );

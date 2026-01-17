@@ -2,22 +2,41 @@ import React, { useContext } from 'react';
 import { Link } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
-import { FiArrowRight, FiCalendar, FiClock, FiZap, FiHeart } from 'react-icons/fi';
+import { FiArrowRight, FiCalendar, FiClock, FiZap, FiHeart, FiTrash2 } from 'react-icons/fi';
 import Header from '../components/Header';
 
 const Workouts = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
-  const { workouts } = useContext(WorkoutContext);
+  const { workouts, deleteWorkout } = useContext(WorkoutContext);
+
+  const handleDelete = async (e, workoutId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (window.confirm('Are you sure you want to delete this workout?')) {
+      try {
+        await deleteWorkout(workoutId);
+      } catch (err) {
+        console.error('Failed to delete workout:', err);
+        alert('Failed to delete workout');
+      }
+    }
+  };
 
   const formatDate = (date) => {
+    // Handle cases where date is undefined or invalid
+    if (!date) return 'Recently';
+    
+    const parsedDate = new Date(date);
+    if (isNaN(parsedDate.getTime())) return 'Recently';
+    
     const now = new Date();
-    const diffTime = Math.abs(now - date);
+    const diffTime = Math.abs(now - parsedDate);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
     if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    return parsedDate.toLocaleDateString();
   };
 
   return (
@@ -38,13 +57,16 @@ const Workouts = () => {
         {/* Workout Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {workouts.map((workout) => (
-            <Link
-              key={workout.id}
-              to={`/episode/${workout.id}`}
-              className={`group rounded-lg shadow-lg overflow-hidden transition-all hover:shadow-2xl hover:-translate-y-1 ${
+            <div
+              key={workout._id || workout.id}
+              className={`group relative rounded-lg shadow-lg overflow-hidden transition-all hover:shadow-2xl hover:-translate-y-1 ${
                 isDark ? 'bg-slate-800 hover:bg-slate-700' : 'bg-white hover:bg-gray-50'
               }`}
             >
+              <Link
+                to={`/episode/${workout._id || workout.id}`}
+                className="block h-full"
+              >
               {/* Gradient Header */}
               <div
                 className={`h-32 bg-gradient-to-br ${
@@ -116,7 +138,21 @@ const Workouts = () => {
                   </div>
                 </div>
               </div>
-            </Link>
+              </Link>
+
+              {/* Delete Button */}
+              <button
+                onClick={(e) => handleDelete(e, workout._id || workout.id)}
+                className={`absolute top-4 right-4 p-2 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${
+                  isDark
+                    ? 'bg-red-900 hover:bg-red-800 text-red-200'
+                    : 'bg-red-100 hover:bg-red-200 text-red-700'
+                }`}
+                title="Delete workout"
+              >
+                <FiTrash2 size={18} />
+              </button>
+            </div>
           ))}
         </div>
 
