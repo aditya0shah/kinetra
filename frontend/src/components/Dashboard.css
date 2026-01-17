@@ -1,0 +1,30 @@
+/* Dashboard Styles */
+
+:root {
+  --color-blue-primary: #3b82f6;
+  --color-green-primary: #10b981;
+  --color-blue-dark: #1e3a8a;
+  --color-green-dark: #065f46;
+}
+
+.dashboard-card {
+  transition: all 0.3s ease;
+}
+
+.dashboard-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-blue-primary), var(--color-green-primary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Smooth transitions */
+.dark {
+  color-scheme: dark;
+}
+
