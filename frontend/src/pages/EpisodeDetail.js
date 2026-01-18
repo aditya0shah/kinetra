@@ -401,25 +401,6 @@ const EpisodeDetail = () => {
             </div>
           </div>
 
-          {/* Quick Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-50'}`}>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Duration</p>
-              <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{workout.duration}m</p>
-            </div>
-            <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-50'}`}>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Calories</p>
-              <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{workout.calories}</p>
-            </div>
-            <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-50'}`}>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Avg Heart Rate</p>
-              <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{workout.avgHeartRate} bpm</p>
-            </div>
-            <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-50'}`}>
-              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Distance</p>
-              <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{workout.distance}km</p>
-            </div>
-          </div>
         </div>
 
         {/* Main Visualizations */}

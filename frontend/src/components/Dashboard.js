@@ -27,13 +27,7 @@ const Dashboard = () => {
                 const workoutData = {
                   name: 'New Workout Session',
                   type: 'Running',
-                  duration: 0,
-                  distance: 0,
-                  calories: 0,
                   status: 'in-progress',
-                  avgHeartRate: 0,
-                  maxHeartRate: 0,
-                  steps: 0,
                   videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
                   timeSeriesData: [],
                   footPressureData: [],
