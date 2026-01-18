@@ -25,6 +25,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from bleak import BleakClient, BleakScanner
+from backend.decode import decode_frame_u16
 
 # BLE UART Service UUIDs (Nordic UART Service)
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -38,7 +39,7 @@ NUM_ROWS = 12
 NUM_COLS = 8
 MAX_CLIP = 3700.0
 EPISODE_DURATION = 5.0  # seconds
-SAMPLING_RATE = 3.0  # Hz (matrices per second)
+SAMPLING_RATE = 1.6  # Hz (matrices per second)
 MATRICES_PER_EPISODE = int(EPISODE_DURATION * SAMPLING_RATE)  # 15
 
 # MediaPipe Configuration
@@ -323,8 +324,54 @@ def run_pose_detection():
         print("Pose detection stopped.")
 
 
+class MagicFrameAssembler:
+    """Assembles fixed-length frames from a byte stream by realigning on a 2-byte magic header (0xBEEF)."""
+    def __init__(self, frame_len: int, magic: int = 0xBEEF):
+        self.frame_len = frame_len
+        self._buffer = bytearray()
+        self._magic = magic
+        self._magic_bytes = bytes([magic & 0xFF, (magic >> 8) & 0xFF])  # little-endian
+
+    def add_chunk(self, data: bytes) -> list[bytes]:
+        if not data:
+            return []
+        
+        self._buffer.extend(data)
+        out: list[bytes] = []
+
+        while True:
+            # Find magic start
+            i = self._buffer.find(self._magic_bytes)
+            if i == -1:
+                # Keep last byte in case magic splits across chunks
+                if len(self._buffer) > 1:
+                    self._buffer[:] = self._buffer[-1:]
+                return out
+
+            # Drop any junk before magic
+            if i > 0:
+                del self._buffer[:i]
+
+            # Need full frame
+            if len(self._buffer) < self.frame_len:
+                return out
+
+            frame = bytes(self._buffer[:self.frame_len])
+            del self._buffer[:self.frame_len]
+            out.append(frame)
+
+
+def on_ble_binary_frame(matrix: np.ndarray):
+    """Process a complete binary frame (decoded matrix)."""
+    global latest_matrix, frame_complete
+    
+    # Update latest matrix
+    latest_matrix = matrix.copy()
+    frame_complete = True
+
+
 def on_ble_line(line: str):
-    """Process a complete line of BLE data."""
+    """Process a complete line of BLE data (text format - kept for compatibility)."""
     global latest_matrix
     parse_ble_line(line.strip())
 
@@ -373,26 +420,38 @@ def start_ble_background_loop():
         print(f"  Address: {device.address}")
         print("Connecting...")
         
-        buffer = ""
+        # Binary frame assembler (like ble.py)
+        payload_len = 4 + NUM_ROWS * NUM_COLS * 2  # 196 bytes: 4 (magic+id) + 96*2 (data)
+        assembler = MagicFrameAssembler(payload_len, magic=0xBEEF)
         
         def _handler(sender, data: bytearray):
-            nonlocal buffer
+            nonlocal assembler
             try:
-                buffer += data.decode('utf-8', errors='ignore')
-                if '\n' in buffer:
-                    lines = buffer.split('\n')
-                    for line in lines[:-1]:
-                        on_ble_line(line.strip())
-                    buffer = lines[-1]
+                # Assemble binary frames
+                for payload in assembler.add_chunk(bytes(data)):
+                    # Decode the binary frame into a matrix
+                    frame_id, matrix = decode_frame_u16(
+                        payload, 
+                        min_v=-1.0, 
+                        max_v=MAX_CLIP, 
+                        rows=NUM_ROWS, 
+                        cols=NUM_COLS
+                    )
+                    
+                    # Apply inactive coordinate masking
+                    for r, c in INACTIVE_COORDS:
+                        matrix[r, c] = MAX_CLIP
+                    
+                    # Process the decoded matrix
+                    on_ble_binary_frame(matrix)
             except Exception as e:
-                print(f"Data decoding error: {e}")
+                print(f"Frame decoding error: {e}")
         
         try:
             async with BleakClient(device) as client:
                 print(f"✓ Connected to {device.name or device.address}!")
                 ble_connected = True
                 await client.start_notify(UART_TX_CHAR_UUID, _handler)
-                print("Waiting for data...")
                 try:
                     while True:
                         await asyncio.sleep(1.0)
