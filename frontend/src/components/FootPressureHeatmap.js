@@ -4,8 +4,6 @@ import usePressureGrid from '../hooks/usePressureGrid';
 const FootPressureHeatmap = ({
   footPressureData,
   isDark,
-  isPaused,
-  onPauseToggle,
   gridRows = 4,
   gridCols = 4,
 }) => {
@@ -118,22 +116,6 @@ const FootPressureHeatmap = ({
           <span className={`text-sm font-mono ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
             ⏱ {formatTime(elapsedTime)}
           </span>
-          {onPauseToggle && (
-            <button
-              onClick={onPauseToggle}
-              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
-                isPaused
-                  ? isDark
-                    ? 'bg-green-900 hover:bg-green-800 text-green-300'
-                    : 'bg-green-100 hover:bg-green-200 text-green-700'
-                  : isDark
-                  ? 'bg-orange-900 hover:bg-orange-800 text-orange-300'
-                  : 'bg-orange-100 hover:bg-orange-200 text-orange-700'
-              }`}
-            >
-              {isPaused ? 'Resume' : 'Pause'}
-            </button>
-          )}
         </div>
       </div>
 

@@ -158,7 +158,11 @@ const Workouts = () => {
                       ? 'bg-gray-700 text-gray-300'
                       : 'bg-gray-200 text-gray-800'
                   }`}>
-                    {isWorkoutInProgress(workout._id || workout.id) ? '🔴 In Progress' : workout.status === 'completed' ? 'Completed' : 'Paused'}
+                    {isWorkoutInProgress(workout._id || workout.id)
+                      ? '🔴 In Progress'
+                      : workout.status === 'completed'
+                      ? 'Completed'
+                      : 'Incomplete'}
                   </div>
                 </div>
               </div>
