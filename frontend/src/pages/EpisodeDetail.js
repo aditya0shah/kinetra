@@ -2,6 +2,7 @@ import React, { useContext, useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
+import { BluetoothContext } from '../context/BluetoothContext';
 import { FiArrowLeft, FiDownload, FiShare2 } from 'react-icons/fi';
 import Header from '../components/Header';
 import FootPressureHeatmap from '../components/FootPressureHeatmap';
@@ -10,6 +11,7 @@ import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
 import { decodeFrameU16 } from '../services/ble';
 import { sendstat, getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
+import CONFIG from '../config';
 import { 
   connectWebSocket, 
   disconnectWebSocket, 
@@ -25,6 +27,7 @@ import {
 const EpisodeDetail = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
   const { hasActiveWorkout, startWorkout, stopWorkout, inProgressWorkoutId } = useContext(WorkoutContext);
+  const { isConnected, startStream: startBleStream } = useContext(BluetoothContext);
   const { id } = useParams();
   const navigate = useNavigate();
   const [workoutDetail, setWorkoutDetail] = useState(null);
@@ -56,7 +59,7 @@ const EpisodeDetail = () => {
     return () => { mounted = false; };
   }, [id]);
 
-  // Start/manage mock device stream and WebSocket connection
+  // Start/manage BLE device stream and WebSocket connection
   useEffect(() => {
     if (!workout || workout.status !== 'in-progress') {
       return;
@@ -124,42 +127,65 @@ const EpisodeDetail = () => {
 
     setupWebSocket();
 
-    const handleDeviceData = (frameData) => {
+    const handleBlePayload = (payload) => {
       if (!isStreamActiveRef.current) return;
 
-      // Update local pressure visualization with real-time pressure data
-      setPressureData(frameData.nodes);
-      console.log('>>> Sending pressure frame to backend:', { nodes: frameData.nodes.length });
-
       try {
-        const matrix = convertToMatrix(frameData);
-        const timestamp = frameData.timestamp || Date.now();
+        const { matrix } = decodeFrameU16(payload, {
+          minV: CONFIG.BLE.MIN_V,
+          maxV: CONFIG.BLE.MAX_V,
+          rows: CONFIG.BLE.ROWS,
+          cols: CONFIG.BLE.COLS,
+        });
+        setGridDims({ rows: CONFIG.BLE.ROWS, cols: CONFIG.BLE.COLS });
+
+        // Update local pressure visualization with real-time pressure data
+        setPressureData({ frames: [matrix] });
+        const timestamp = Date.now();
 
         // Accumulate raw pressure matrix data to save to MongoDB later
         setPressureMatrixData(prev => [...prev, {
           timestamp: timestamp,
           matrix: matrix,
-          nodes: frameData.nodes
         }]);
 
         // Send to backend via WebSocket for real-time stats calculation
         console.log('>>> Emitting pressure_frame via WebSocket');
-        sendPressureFrame(workoutId, matrix, frameData.nodes, timestamp);
+        sendPressureFrame(workoutId, matrix, undefined, timestamp);
       } catch (e) {
-        console.error('Failed to send pressure frame:', e);
+        console.error('Failed to process BLE payload:', e);
       }
     };
 
-    // Start streaming every 250ms (1/4 second)
-    const stop = startMockDeviceStream(handleDeviceData, 250);
-    stopStreamRef.current = stop;
+    const startBleStreamInternal = async () => {
+      if (!isConnected) {
+        console.warn('BLE device not connected. Streaming disabled.');
+        return;
+      }
+      try {
+        const payloadLen = 4 + CONFIG.BLE.ROWS * CONFIG.BLE.COLS * 2;
+        const stop = await startBleStream({
+          payloadLen,
+          useSequence: CONFIG.BLE.USE_SEQUENCE,
+          onPayload: handleBlePayload,
+        });
+        stopStreamRef.current = stop;
+      } catch (e) {
+        console.error('Failed to start BLE stream:', e);
+      }
+    };
+
+    startBleStreamInternal();
 
     // Cleanup on unmount
     return () => {
       isStreamActiveRef.current = false;
-      if (stop) stop();
+      if (stopStreamRef.current) {
+        stopStreamRef.current();
+        stopStreamRef.current = null;
+      }
     };
-  }, [workout, canStart, hasActiveWorkout, startWorkout, navigate, inProgressWorkoutId]);
+  }, [workout, canStart, hasActiveWorkout, startWorkout, navigate, inProgressWorkoutId, isConnected, startBleStream]);
 
   const handleCompleteWorkout = async () => {
     if (!workout) return;
