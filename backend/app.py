@@ -22,6 +22,15 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# LiveKit imports for token generation
+try:
+    from livekit import api
+except ImportError:
+    api = None
+    print("Warning: LiveKit not installed. Agent features will be disabled.")
+
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
@@ -48,6 +57,79 @@ def create_app() -> Flask:
     def health():
         return jsonify({"status": "healthy"})
 
+    @app.get("/livekit-token")
+    def get_livekit_token():
+        """Generate a LiveKit access token for connecting to the agent"""
+        if not api:
+            return jsonify({
+                "error": "LiveKit SDK not installed",
+                "hint": "Run: pip install livekit-api"
+            }), 503
+        
+        try:
+            # Get LiveKit credentials from environment
+            livekit_url = os.getenv('LIVEKIT_URL')
+            livekit_api_key = os.getenv('LIVEKIT_API_KEY')
+            livekit_api_secret = os.getenv('LIVEKIT_API_SECRET')
+            
+            # Validate credentials are configured
+            if not livekit_url:
+                return jsonify({
+                    "error": "LiveKit not configured",
+                    "message": "LIVEKIT_URL is not set in .env",
+                    "instructions": [
+                        "1. Sign up at https://cloud.livekit.io",
+                        "2. Create a project and get credentials",
+                        "3. Add to backend/.env:",
+                        "   LIVEKIT_URL=wss://your-project.livekit.cloud",
+                        "   LIVEKIT_API_KEY=your-api-key",
+                        "   LIVEKIT_API_SECRET=your-api-secret"
+                    ]
+                }), 503
+            
+            if not livekit_api_key or not livekit_api_secret:
+                return jsonify({
+                    "error": "LiveKit credentials incomplete",
+                    "message": "LIVEKIT_API_KEY or LIVEKIT_API_SECRET not set",
+                    "hint": "Add both to backend/.env"
+                }), 503
+            
+            # Generate a unique participant identity
+            import time
+            participant_identity = f"user_{int(time.time())}"
+            
+            # Create access token
+            token = api.AccessToken(livekit_api_key, livekit_api_secret) \
+                .with_identity(participant_identity) \
+                .with_name("Kinetra User") \
+                .with_grants(api.VideoGrants(
+                    room_join=True,
+                    room="kinetra-workout-session",
+                    can_publish=True,
+                    can_subscribe=True,
+                ))
+            
+            jwt_token = token.to_jwt()
+            
+            return jsonify({
+                "serverUrl": livekit_url,
+                "token": jwt_token,
+                "participantIdentity": participant_identity,
+                "status": "success"
+            }), 200
+            
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error generating LiveKit token: {error_message}")
+            import traceback
+            traceback.print_exc()
+            
+            return jsonify({
+                "error": "Token generation failed",
+                "message": error_message,
+                "hint": "Check that your LIVEKIT_API_KEY and LIVEKIT_API_SECRET are correct"
+            }), 500
+
     @app.get("/workouts")
     def get_workouts():
         """Fetch all workouts from MongoDB"""
@@ -58,8 +140,6 @@ def create_app() -> Flask:
             return jsonify({"error": str(e)}), 500
 
             
-                
-                
     @app.get("/workouts/<workout_id>")
     def get_workout(workout_id):
         """Fetch a specific workout from MongoDB with pressure frames (if available)"""
@@ -361,6 +441,8 @@ def create_app() -> Flask:
                         }, room=str(workout_id))
         except Exception as e:
             print(f'Change stream error: {e}')
+            
+    
 
     # Start background change stream watcher once
     socketio.start_background_task(watch_sessions)
