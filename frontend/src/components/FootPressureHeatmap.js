@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import usePressureGrid from '../hooks/usePressureGrid';
 
 const FootPressureHeatmap = ({
@@ -21,13 +21,54 @@ const FootPressureHeatmap = ({
     const maxValue = 3700;
     const clamped = Math.min(Math.max(pressure, 0), maxValue);
     const inverted = 1 - clamped / maxValue; // 0..1 (higher is more pressure)
-    if (inverted < 0.25) return '#10b981'; // Low
-    if (inverted < 0.5) return '#3b82f6'; // Medium
-    if (inverted < 0.75) return '#f59e0b'; // High
-    return '#ef4444'; // Very High
+    // Map 0..1 to green->red gradient (low->high pressure)
+    const hue = 120 * (1 - inverted); // 120=green, 0=red
+    return `hsl(${hue}, 85%, 50%)`;
+  };
+
+  const applyGaussianKernel = (inputGrid) => {
+    if (!Array.isArray(inputGrid) || inputGrid.length === 0) return inputGrid;
+    const rows = inputGrid.length;
+    const cols = inputGrid[0]?.length || 0;
+    if (!cols) return inputGrid;
+
+    const kernel = [
+      [0.5, 1, 0.5],
+      [1, 2, 1],
+      [0.5, 1, 0.5],
+    ];
+
+    const output = inputGrid.map((row) => row.slice());
+
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const center = inputGrid[r][c];
+        if (center === -1) {
+          output[r][c] = -1;
+          continue;
+        }
+        let sum = 0;
+        let weightSum = 0;
+        for (let kr = -1; kr <= 1; kr += 1) {
+          for (let kc = -1; kc <= 1; kc += 1) {
+            const rr = r + kr;
+            const cc = c + kc;
+            if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue;
+            const value = inputGrid[rr][cc];
+            if (value === -1) continue;
+            const weight = kernel[kr + 1][kc + 1];
+            sum += value * weight;
+            weightSum += weight;
+          }
+        }
+        output[r][c] = weightSum > 0 ? sum / weightSum : center;
+      }
+    }
+    return output;
   };
 
   const { grid, dims } = usePressureGrid(resolvedData, 0, { gridCols, gridRows });
+  const smoothedGrid = useMemo(() => applyGaussianKernel(grid), [grid]);
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -54,39 +95,49 @@ const FootPressureHeatmap = ({
     const cellW = cols ? gridW / cols : 0;
     const cellH = rows ? gridH / rows : 0;
 
-    // Draw grid cells
+    // Draw grid cells to offscreen canvas, then blur for smooth transitions
+    const offscreen = document.createElement('canvas');
+    offscreen.width = width;
+    offscreen.height = height;
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        const value = grid[r][c] ?? -1;
+        const value = smoothedGrid[r]?.[c] ?? -1;
         const x = gridX + c * cellW;
         const y = gridY + r * cellH;
 
         // Skip cells marked -1 (no sensor) → shapes the foot
         if (value === -1) {
-          // Draw subtle empty cell border for clarity
-          ctx.strokeStyle = isDark ? '#1f2937' : '#e5e7eb';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, cellW, cellH);
           continue;
         }
 
         const color = getPressureColor(value);
-        ctx.fillStyle = color;
+        offCtx.fillStyle = color;
         const maxValue = 3700;
         const clamped = Math.min(Math.max(value, 0), maxValue);
         const inverted = 1 - clamped / maxValue; // darker for higher pressure
-        ctx.globalAlpha = Math.min(0.85, 0.35 + inverted * 0.5);
-        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+        offCtx.globalAlpha = Math.min(0.85, 0.35 + inverted * 0.5);
+        offCtx.fillRect(x, y, cellW, cellH);
+      }
+    }
 
-        // Cell border
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = isDark ? '#334155' : '#cbd5e1';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, y, cellW, cellH);
+    ctx.filter = 'blur(8px)';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(offscreen, 0, 0);
+    ctx.filter = 'none';
 
-        if (showNumbers) {
-          ctx.font = '10px Inter, system-ui';
-          ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
+    if (showNumbers) {
+      ctx.globalAlpha = 1;
+      ctx.font = '10px Inter, system-ui';
+      ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const value = smoothedGrid[r]?.[c] ?? -1;
+          if (value === -1) continue;
+          const x = gridX + c * cellW;
+          const y = gridY + r * cellH;
           ctx.fillText(String(Math.round(value)), x + 6, y + 12);
         }
       }
@@ -123,29 +174,17 @@ const FootPressureHeatmap = ({
       </div>
 
       {/* Canvas */}
-      <div className={`rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
+      <div className={`relative rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
+        <img
+          src="/leftfoot.png"
+          alt="Left foot overlay"
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          style={{ opacity: isDark ? 0.35 : 0.25 }}
+        />
         <canvas ref={canvasRef} style={{ width: '100%', height: 520 }} />
       </div>
 
-      {/* Legend */}
-      <div className="mt-4 mb-2 flex items-center justify-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#10b981' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Low</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#3b82f6' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Medium</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#f59e0b' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>High</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#ef4444' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Very High</span>
-        </div>
-      </div>
+
 
       {/* Pressure values grid removed for thinner view */}
     </div>
