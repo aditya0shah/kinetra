@@ -4,17 +4,18 @@ import numpy as np
 # Row 0: Toes
 # Rows 1-2: Metatarsals (M1-M5)
 # Row 3: Heel (medial and lateral)
+
 REGIONS = {
-    "Toe1": (np.s_[0, 0:1], 2.0),           # Left toe
-    "Toe2345": (np.s_[0, 1:4], 2.0),        # Right toes
-    "M1": (np.s_[1:3, 0], 2.0),             # Metatarsal 1 (medial)
-    "M2": (np.s_[1:3, 1], 2.0),             # Metatarsal 2
-    "M3": (np.s_[1:3, 2], 2.0),             # Metatarsal 3 (center)
-    "M4": (np.s_[1:3, 3], 2.0),             # Metatarsal 4
-    "M5": (np.s_[1:3, 3], 2.0),             # Metatarsal 5 (lateral) - shares column with M4
-    "Mid Foot": (np.s_[0, :], 2.0),         # Mid-foot area (sparse)
-    "Med Heel": (np.s_[3, 0:2], 2.0),       # Medial heel
-    "Lat Heel": (np.s_[3, 2:4], 2.0),       # Lateral heel
+    "Toe1": (np.s_[0:2, :3], 2.0),
+    "Toe2345": (np.s_[0:2, 3:], 2.0),
+    "M1": (np.s_[2:5, :4], 2.0),
+    "M2": (np.s_[2:5, 4:5], 2.0),
+    "M3": (np.s_[2:5, 5:6], 2.0),
+    "M4": (np.s_[2:5, 6:7], 2.0),
+    "M5": (np.s_[2:5, 7:], 2.0),
+    "Mid Foot": (np.s_[5:9, :], 2.0),
+    "Med Heel": (np.s_[9:, :4], 2.0),
+    "Lat Heel": (np.s_[9:, 4:], 2.0),
 }
 
 def split_into_regions(matrix):

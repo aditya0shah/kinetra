@@ -8,34 +8,65 @@ UART_RX_CHAR_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  # central -> periphe
 UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
 
 
-class ChunkAssembler:
-    def __init__(self, payload_len: int, use_sequence: bool = False) -> None:
-        self.payload_len = payload_len
+class MagicFrameAssembler:
+    """
+    Assembles fixed-length frames from a byte stream by realigning on a 2-byte
+    little-endian magic header (default 0xBEEF -> b'\\xEF\\xBE').
+
+    If use_sequence=True, expects each BLE notification chunk to begin with a
+    2-byte little-endian sequence number, which is stripped before buffering.
+    """
+    def __init__(self, frame_len: int, magic: int = 0xBEEF, use_sequence: bool = False) -> None:
+        self.frame_len = frame_len
         self.use_sequence = use_sequence
         self._buffer = bytearray()
         self._expected_seq = 0
 
+        self._magic = magic
+        self._magic_bytes = bytes([magic & 0xFF, (magic >> 8) & 0xFF])  # little-endian
+
     def add_chunk(self, data: bytes) -> list[bytes]:
+        if not data:
+            return []
+
+        # Optional 2-byte seq header per notification
         if self.use_sequence:
             if len(data) < 2:
                 return []
             seq = data[0] | (data[1] << 8)
-            # If sequence jumps, reset to avoid mixing payloads.
             if seq != self._expected_seq:
+                # sequence jumped -> drop buffer to avoid mixing partial frames
                 self._buffer.clear()
                 self._expected_seq = seq
             self._expected_seq = (seq + 1) & 0xFFFF
             data = data[2:]
-
-        if not data:
-            return []
+            if not data:
+                return []
 
         self._buffer.extend(data)
-        complete = []
-        while len(self._buffer) >= self.payload_len:
-            complete.append(bytes(self._buffer[: self.payload_len]))
-            del self._buffer[: self.payload_len]
-        return complete
+        out: list[bytes] = []
+
+        while True:
+            # Find magic start
+            i = self._buffer.find(self._magic_bytes)
+            if i == -1:
+                # Keep last byte in case magic splits across chunks (EF | BE)
+                if len(self._buffer) > 1:
+                    self._buffer[:] = self._buffer[-1:]
+                return out
+
+            # Drop any junk before magic
+            if i > 0:
+                del self._buffer[:i]
+
+            # Need full frame
+            if len(self._buffer) < self.frame_len:
+                return out
+
+            frame = bytes(self._buffer[:self.frame_len])
+            del self._buffer[:self.frame_len]
+            out.append(frame)
+
 
 
 async def _find_device_by_name(device_name: str, timeout: float = 10.0):
@@ -55,7 +86,7 @@ async def read_one_payload(
     if device is None:
         raise RuntimeError(f"BLE device not found: {device_name}")
 
-    assembler = ChunkAssembler(payload_len, use_sequence=use_sequence)
+    assembler = MagicFrameAssembler(payload_len)
     payload_future: asyncio.Future[bytes] = asyncio.get_event_loop().create_future()
 
     def _handler(_, data: bytearray):
@@ -80,7 +111,7 @@ async def stream_payloads(
     if device is None:
         raise RuntimeError(f"BLE device not found: {device_name}")
 
-    assembler = ChunkAssembler(payload_len, use_sequence=use_sequence)
+    assembler = MagicFrameAssembler(payload_len)
 
     def _handler(_, data: bytearray):
         for payload in assembler.add_chunk(bytes(data)):
