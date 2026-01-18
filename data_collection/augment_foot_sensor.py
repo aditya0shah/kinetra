@@ -23,7 +23,13 @@ INACTIVE_COORDS = {
     (8, 6), (8, 7), (9, 6), (9, 7),   # bottom edges
     (10, 6), (10, 7), (11, 6), (11, 7)  # bottom corners
 }
-MAX_CLIP = 3700.0  # ohms; 3700 = no pressure, lower = higher pressure
+
+# Normalization parameters (matching classification.py and skeleton.py)
+IN_MIN = 1000.0
+IN_MAX = 5000.0
+OUT_MIN = 0.0
+OUT_MAX = 100.0
+MAX_CLIP = 5000.0  # ohms; 3700 = no pressure, lower = higher pressure
 
 
 def make_active_mask(n_rows: int = 12, n_cols: int = 8):
@@ -35,6 +41,76 @@ def make_active_mask(n_rows: int = 12, n_cols: int = 8):
     return mask
 
 
+def rescale_matrix(matrix):
+    """
+    Rescale pressure matrix values to match classification.py and skeleton.py normalization.
+    
+    Maps values from [1000, 5000] to [0, 100] with inversion:
+    - Values <= 0 -> -1
+    - Higher pressure (lower resistance) -> higher output value
+    - Matches frontend rescaleMatrix function and classification.py/skeleton.py logic
+    
+    Args:
+        matrix: numpy array of pressure values (can be 2D or 3D)
+    
+    Returns:
+        Rescaled matrix with same shape, values in [0, 100] or -1
+    """
+    in_range = IN_MAX - IN_MIN
+    out_range = OUT_MAX - OUT_MIN
+    
+    # Create output array with same shape
+    result = np.zeros_like(matrix, dtype=np.float32)
+    
+    # Handle values <= 0 -> set to -1
+    mask_invalid = matrix <= 0
+    result[mask_invalid] = -1.0
+    
+    # Scale valid values: ((value - inMin) / inRange) * outRange + outMin
+    mask_valid = ~mask_invalid
+    scaled = ((matrix[mask_valid] - IN_MIN) / in_range) * out_range + OUT_MIN
+    
+    # Clamp to [outMin, outMax]
+    scaled = np.clip(scaled, OUT_MIN, OUT_MAX)
+    
+    # Invert: outMax - scaled (so 3700 -> 0, 700 -> 100)
+    result[mask_valid] = OUT_MAX - scaled
+    
+    return result
+
+
+def denormalize_matrix(matrix):
+    """
+    Reverse normalization: convert from [0, 100] back to raw [1000, 5000] range.
+    
+    This is used when we need to work with raw values for augmentation.
+    
+    Args:
+        matrix: normalized matrix with values in [0, 100] or -1
+    
+    Returns:
+        Denormalized matrix with values in [1000, 5000] or MAX_CLIP
+    """
+    in_range = IN_MAX - IN_MIN
+    out_range = OUT_MAX - OUT_MIN
+    
+    result = np.zeros_like(matrix, dtype=np.float64)
+    
+    # Handle invalid values (-1) -> set to MAX_CLIP
+    mask_invalid = matrix < 0
+    result[mask_invalid] = MAX_CLIP
+    
+    # Reverse invert and scale
+    mask_valid = ~mask_invalid
+    inverted = OUT_MAX - matrix[mask_valid]  # Reverse inversion
+    denorm = (inverted / out_range) * in_range + IN_MIN  # Reverse scaling
+    
+    result[mask_valid] = denorm
+    result = np.clip(result, 0.0, MAX_CLIP)
+    
+    return result
+
+
 def add_foot_sensor_noise(
     matrices: np.ndarray,
     noise_std: float,
@@ -43,26 +119,45 @@ def add_foot_sensor_noise(
 ) -> np.ndarray:
     """
     Add Gaussian noise to foot sensor data (matrices) on active cells only.
-    Inactive cells stay at MAX_CLIP. Values are clipped to [0, MAX_CLIP].
+    Works with normalized data [0, 100] or raw data [0, MAX_CLIP].
+    
+    If data appears normalized (all values <= 100), adds noise in normalized space.
+    Otherwise, assumes raw data and adds noise in raw space, then normalizes.
 
-    matrices: (T, 12, 8) float64, values in [0, MAX_CLIP]
-    noise_std: std of Gaussian noise in same units (ohms)
+    matrices: (T, 12, 8) float64, values in [0, MAX_CLIP] (raw) or [0, 100] (normalized)
+    noise_std: std of Gaussian noise in same units as matrices
     rng: numpy random generator for reproducibility
     inplace: if True, modify matrices; else copy first
     """
     T, R, C = matrices.shape
     out = matrices if inplace else matrices.copy().astype(np.float64)
 
+    # Check if data is already normalized (values typically <= 100)
+    max_val = np.max(out[out >= 0])  # Ignore -1 values
+    is_normalized = max_val <= 110.0  # Small threshold for normalized data
+    
+    if not is_normalized:
+        # Data is raw, normalize first
+        out = rescale_matrix(out)
+
     active = make_active_mask(R, C)  # (12, 8)
     # Noise shape (T, 12, 8); we will only add where active
     noise = rng.normal(0, noise_std, size=out.shape)
     noise[:, ~active] = 0.0  # no noise on inactive
     out += noise
-    out = np.clip(out, 0.0, MAX_CLIP)
-    # Restore inactive to exactly MAX_CLIP (clip might have left small errors)
+    
+    # Clip to valid normalized range [0, 100] or preserve -1
+    valid_mask = out >= 0
+    out[valid_mask] = np.clip(out[valid_mask], OUT_MIN, OUT_MAX)
+    
+    # Restore inactive cells: if they were -1, keep -1; otherwise set to 0 (normalized "no pressure")
+    # Note: inactive cells should be masked out, but if they exist in normalized data,
+    # they should be 0 (which represents MAX_CLIP in normalized space)
     for r, c in INACTIVE_COORDS:
         if r < R and c < C:
-            out[:, r, c] = MAX_CLIP
+            # In normalized space, inactive should be 0 (represents MAX_CLIP)
+            out[:, r, c] = 0.0
+    
     return out
 
 
@@ -85,12 +180,42 @@ def augment_episode(
     """
     Return a new dict with noise added to `matrices`; `pose_landmarks` and
     all other keys are copied as-is (we copy arrays to avoid sharing memory).
+    
+    Matrices are normalized using rescale_matrix (matching classification.py/skeleton.py)
+    before noise is added, ensuring consistent normalization.
+    
+    Args:
+        data: Dictionary with 'matrices' key containing (T, 12, 8) arrays
+        noise_std: Std of noise in raw ohms (will be converted to normalized units)
+        rng: Random number generator
     """
     out = {}
     for k, v in data.items():
         if k == "matrices":
             arr = np.asarray(v, dtype=np.float64)
-            out[k] = add_foot_sensor_noise(arr, noise_std, rng, inplace=False)
+            
+            # Check if data is already normalized (values typically <= 100)
+            max_val = np.max(arr[arr >= 0]) if np.any(arr >= 0) else 0
+            is_normalized = max_val <= 110.0
+            
+            # Normalize if needed (matching classification.py/skeleton.py)
+            if not is_normalized:
+                arr_normalized = rescale_matrix(arr)
+            else:
+                arr_normalized = arr.copy().astype(np.float64)
+            
+            # Convert noise_std from ohms to normalized units
+            # Normalization maps [1000, 5000] ohms to [0, 100] normalized units
+            # So 1 ohm = (100 / (5000-1000)) = 0.025 normalized units
+            in_range = IN_MAX - IN_MIN  # 4000 ohms
+            out_range = OUT_MAX - OUT_MIN  # 100 normalized units
+            noise_std_normalized = (noise_std / in_range) * out_range
+            
+            # Add noise to normalized data
+            arr_augmented = add_foot_sensor_noise(arr_normalized, noise_std_normalized, rng, inplace=False)
+            
+            # Save normalized data (matching classification.py/skeleton.py format)
+            out[k] = arr_augmented
         else:
             out[k] = np.asarray(v).copy() if hasattr(v, "shape") and hasattr(v, "copy") else v
     return out

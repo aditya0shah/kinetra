@@ -33,7 +33,8 @@ from bleak import BleakClient, BleakScanner
 import asyncio
 import threading
 
-# BLE Configuration
+# BLE Configuration (Nordic UART Service)
+UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 NUM_ROWS = 12
 NUM_COLS = 8
@@ -197,27 +198,40 @@ async def classify_from_ble(classifier: LiveClassifier, device_name: str, sampli
     
     Args:
         classifier: LiveClassifier instance
-        device_name: BLE device name to connect to
+        device_name: BLE device name (or substring) to connect to
         sampling_rate: Expected frames per second (for display purposes)
     """
     print(f"Scanning for BLE device: {device_name}...")
     
-    # Find device
     device = None
     devices = await BleakScanner.discover(timeout=10.0)
-    for d in devices:
-        if device_name.lower() in (d.name or "").lower():
-            device = d
-            break
-    
+
+    # 1) Try by name (exact or substring)
+    if device_name:
+        for d in devices:
+            if d.name and device_name.lower() in d.name.lower():
+                device = d
+                break
+
+    # 2) If not found by name, scan by Nordic UART Service UUID (foot sensor uses this)
     if device is None:
-        print(f"❌ Device '{device_name}' not found!")
-        print("Available devices:")
+        print(f"  '{device_name}' not in scan. Trying Nordic UART service {UART_SERVICE_UUID}...")
+        by_service = await BleakScanner.discover(timeout=10.0, service_uuids=[UART_SERVICE_UUID])
+        if by_service:
+            print(f"  Found {len(by_service)} device(s) with UART service:")
+            for d in by_service:
+                print(f"    - {d.name or 'Unknown'} ({d.address})")
+            device = by_service[0]
+
+    if device is None:
+        print(f"❌ Device not found!")
+        print("Available devices (general scan):")
         for d in devices:
             print(f"  - {d.name or d.address}")
+        print("\nTroubleshooting: power on the sensor, ensure it's not paired elsewhere, or try --device-name Seos or --device-name AC20 if that is your sensor.")
         return
-    
-    print(f"✓ Found device: {device.name or device.address}")
+
+    print(f"✓ Found device: {device.name or device.address} ({device.address})")
     
     # Frame assembler
     payload_len = 4 + NUM_ROWS * NUM_COLS * 2  # 196 bytes

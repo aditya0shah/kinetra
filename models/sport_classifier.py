@@ -8,6 +8,7 @@ from typing import List, Tuple, Optional
 import os
 import json
 from tqdm import tqdm
+from datetime import datetime
 
 
 class FootSensorDataset(Dataset):
@@ -28,11 +29,21 @@ class FootSensorDataset(Dataset):
         data = np.load(self.file_paths[idx])
         
         # Process Foot Data: (15, 12, 8)
-        # Invert: 3700 (no pressure) -> 0.0, 0 (max pressure) -> 1.0
         foot_data = data['matrices'].astype(np.float32)
-        foot_data = (self.max_clip - foot_data) / self.max_clip
-        foot_data = np.clip(foot_data, 0, 1)
-        foot_data += torch.randn_like(foot_data) * 0.01
+        
+        # Check if data is already normalized (values typically in [0, 100] or [0, 1])
+        max_val = np.max(foot_data[foot_data >= 0]) if np.any(foot_data >= 0) else 0
+        
+        if max_val <= 110.0:
+            # Data is already normalized (from classification.py/skeleton.py: [0, 100])
+            # Convert from [0, 100] to [0, 1] by dividing by 100
+            foot_data = foot_data / 100.0
+            foot_data = np.clip(foot_data, 0, 1)
+        else:
+            # Data is raw, normalize: invert 3700 (no pressure) -> 0.0, 0 (max pressure) -> 1.0
+            foot_data = (self.max_clip - foot_data) / self.max_clip
+            foot_data = np.clip(foot_data, 0, 1)
+        
         # Label
         label = self.labels_map[str(data['class_label'])]
         
@@ -163,7 +174,9 @@ class SportClassifier(nn.Module):
 
 def load_data_paths(data_dir: str = 'data/raw', 
                     split: Optional[str] = None,
-                    labels_map: Optional[dict] = None) -> Tuple[List[Path], dict]:
+                    labels_map: Optional[dict] = None,
+                    use_augmented: bool = False,
+                    augment_dir: str = 'data/raw_augmented') -> Tuple[List[Path], dict]:
     """
     Load file paths from the data directory structure.
     
@@ -173,6 +186,8 @@ def load_data_paths(data_dir: str = 'data/raw',
         data_dir: Root data directory (e.g., 'data/raw' or 'data/test')
         split: Optional subset name (e.g., 'raw' or 'test'). If None, uses data_dir as-is
         labels_map: Optional mapping of class names to labels. If None, auto-generates from found classes
+        use_augmented: If True, also include .npz files from augment_dir (same class subdir structure)
+        augment_dir: Directory for augmented data (default: data/raw_augmented). Only used if use_augmented=True.
     
     Returns:
         Tuple of (list of file paths, labels_map dictionary)
@@ -203,6 +218,22 @@ def load_data_paths(data_dir: str = 'data/raw',
         for npz_file in class_dir.glob('*.npz'):
             file_paths.append(npz_file)
     
+    # Optionally include augmented data (same class subdir structure)
+    if use_augmented:
+        aug_path = Path(augment_dir)
+        if aug_path.exists():
+            n_before = len(file_paths)
+            for class_dir in aug_path.iterdir():
+                if not class_dir.is_dir():
+                    continue
+                class_name = class_dir.name
+                class_names.add(class_name)
+                for npz_file in class_dir.glob('*.npz'):
+                    file_paths.append(npz_file)
+            print(f"Included {len(file_paths) - n_before} augmented files from {aug_path}")
+        else:
+            print(f"Warning: augment_dir {aug_path} not found, skipping augmented data.")
+    
     if len(file_paths) == 0:
         raise ValueError(f"No .npz files found in {data_path}")
     
@@ -214,7 +245,7 @@ def load_data_paths(data_dir: str = 'data/raw',
         sorted_classes = sorted(class_names)
         labels_map = {class_name: idx for idx, class_name in enumerate(sorted_classes)}
     
-    print(f"Loaded {len(file_paths)} files from {data_path}")
+    print(f"Loaded {len(file_paths)} files from {data_path}" + (" (incl. augmented)" if use_augmented else ""))
     print(f"Classes found: {sorted(class_names)}")
     print(f"Labels map: {labels_map}")
     
@@ -227,7 +258,9 @@ def create_datasets(data_dir: str = 'data/raw',
                     train_val_ratio: float = 0.8,
                     labels_map: Optional[dict] = None,
                     max_clip: float = 3700.0,
-                    random_seed: int = 42) -> Tuple[FootSensorDataset, FootSensorDataset, Optional[FootSensorDataset], dict]:
+                    random_seed: int = 42,
+                    use_augmented: bool = False,
+                    augment_dir: str = 'data/raw_augmented') -> Tuple[FootSensorDataset, FootSensorDataset, Optional[FootSensorDataset], dict]:
     """
     Create train, validation, and test datasets from data directory.
     
@@ -239,15 +272,19 @@ def create_datasets(data_dir: str = 'data/raw',
         labels_map: Optional mapping of class names to labels
         max_clip: Maximum pressure value for normalization (default: 3700.0)
         random_seed: Random seed for train/val split (default: 42)
+        use_augmented: If True, include augmented data from augment_dir in the training set (default: False)
+        augment_dir: Directory for augmented data (default: 'data/raw_augmented'). Only used if use_augmented=True.
     
     Returns:
         Tuple of (train_dataset, val_dataset, test_dataset (or None), labels_map)
     """
-    # Load training data paths
+    # Load training data paths (optionally including augmented)
     train_paths, labels_map = load_data_paths(
         data_dir=data_dir,
         split=train_split,
-        labels_map=labels_map
+        labels_map=labels_map,
+        use_augmented=use_augmented,
+        augment_dir=augment_dir
     )
     
     # Split train/val if multiple files
@@ -470,7 +507,8 @@ def train_model(
     save_dir='models/checkpoints',
     save_best=True,
     patience=10,
-    labels_map=None
+    labels_map=None,
+    run_id=None
 ):
     """
     Complete training pipeline.
@@ -486,11 +524,20 @@ def train_model(
         save_best: Whether to save best model based on validation accuracy
         patience: Early stopping patience (epochs without improvement)
         labels_map: Labels mapping dictionary
+        run_id: Optional run identifier. If None, uses timestamp.
     
     Returns:
-        Training history dictionary
+        Training history dictionary and run directory path
     """
     model.to(device)
+    
+    # Create unique run directory with timestamp
+    if run_id is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        run_id = f"run_{timestamp}"
+    
+    run_dir = os.path.join(save_dir, run_id)
+    os.makedirs(run_dir, exist_ok=True)
     
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -509,7 +556,7 @@ def train_model(
     
     best_val_acc = 0.0
     epochs_without_improvement = 0
-    best_model_path = os.path.join(save_dir, 'best_model.pth')
+    best_model_path = os.path.join(run_dir, 'best_model.pth')
     
     print(f"Starting training on {device}")
     print(f"Training samples: {len(train_dataloader.dataset)}")
@@ -551,10 +598,10 @@ def train_model(
                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
             
             # Early stopping
-            if patience > 0 and epochs_without_improvement >= patience:
-                print(f"\nEarly stopping at epoch {epoch+1} "
-                      f"(no improvement for {patience} epochs)")
-                break
+            # if patience > 0 and epochs_without_improvement >= patience:
+            #     print(f"\nEarly stopping at epoch {epoch+1} "
+            #           f"(no improvement for {patience} epochs)")
+            #     break
         else:
             # No validation set, just update learning rate based on train loss
             scheduler.step(train_loss)
@@ -563,18 +610,19 @@ def train_model(
         
         # Save checkpoint every 10 epochs
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}.pth')
+            checkpoint_path = os.path.join(run_dir, f'checkpoint_epoch_{epoch+1}.pth')
             save_model(
                 model, optimizer, epoch, train_loss, train_acc,
                 labels_map, checkpoint_path
             )
     
     print("\nTraining completed!")
+    print(f"Checkpoints saved in: {run_dir}")
     if val_dataloader and save_best:
         print(f"Best validation accuracy: {best_val_acc:.2f}%")
         print(f"Best model saved to: {best_model_path}")
     
-    return history
+    return history, run_dir
 
 
 if __name__ == '__main__':
@@ -587,6 +635,10 @@ if __name__ == '__main__':
                         help='Training data split name')
     parser.add_argument('--test-split', type=str, default='test',
                         help='Test data split name')
+    parser.add_argument('--use-augmented', action='store_true',
+                        help='Include augmented data from data/raw_augmented in training')
+    parser.add_argument('--augment-dir', type=str, default='data/raw_augmented',
+                        help='Directory for augmented data (default: data/raw_augmented)')
     parser.add_argument('--train-val-ratio', type=float, default=0.8,
                         help='Train/validation split ratio')
     parser.add_argument('--batch-size', type=int, default=32,
@@ -630,7 +682,9 @@ if __name__ == '__main__':
         train_split=args.train_split,
         test_split=args.test_split,
         train_val_ratio=args.train_val_ratio,
-        random_seed=args.seed
+        random_seed=args.seed,
+        use_augmented=args.use_augmented,
+        augment_dir=args.augment_dir
     )
     
     # Create data loaders
@@ -669,7 +723,7 @@ if __name__ == '__main__':
     print("-" * 60)
     
     # Train model
-    history = train_model(
+    history, run_dir = train_model(
         model=model,
         train_dataloader=train_loader,
         val_dataloader=val_loader,
@@ -688,10 +742,13 @@ if __name__ == '__main__':
         criterion = nn.CrossEntropyLoss()
         test_loss, test_acc = validate(model, test_loader, criterion, device, 'Test')
         print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
+        
+        # Save test results to history
+        history['test_loss'] = test_loss
+        history['test_acc'] = test_acc
     
-    # Save training history
-    history_path = os.path.join(args.save_dir, 'training_history.json')
-    os.makedirs(args.save_dir, exist_ok=True)
+    # Save training history to run directory
+    history_path = os.path.join(run_dir, 'training_history.json')
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
     print(f"\nTraining history saved to: {history_path}")
