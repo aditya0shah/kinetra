@@ -451,7 +451,11 @@ const EpisodeDetail = () => {
 
             {/* Metrics Graph - Time-series line graphs */}
             <div className="w-full">
-              <MetricsGraph timeSeriesStats={timeSeriesStats} isDark={isDark} />
+              <MetricsGraph
+                timeSeriesStats={timeSeriesStats}
+                isDark={isDark}
+                activeFrameIndex={isReplaying ? replayIndex : undefined}
+              />
             </div>
           </div>
 

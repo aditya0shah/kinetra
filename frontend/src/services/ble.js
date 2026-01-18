@@ -217,6 +217,24 @@ export const decodeFrameU16 = (
   for (let r = 0; r < rows; r += 1) {
     matrix.push(values.slice(r * cols, (r + 1) * cols));
   }
-  return { frameId, matrix };
+
+  const rescaledMatrix = rescaleMatrix(matrix);
+  return { frameId, matrix: rescaledMatrix }; 
+};
+
+
+export const rescaleMatrix = (matrix) => {
+  const inMin = 700;
+  const inMax = 3700;
+  const outMin = 0;
+  const outMax = 100;
+  const inRange = inMax - inMin;
+  const outRange = outMax - outMin;
+
+  return matrix.map(row => row.map(value => {
+    if (value <= 0) return -1;
+    const scaled = ((value - inMin) / inRange) * outRange + outMin;
+    return Math.min(outMax, Math.max(outMin, scaled));
+  }));
 };
 

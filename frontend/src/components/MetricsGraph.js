@@ -7,7 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
  * - Line graphs: mean_force, sum_pressure, mean, std
  * - Single values: max, min
  */
-const MetricsGraph = ({ timeSeriesStats, isDark }) => {
+const MetricsGraph = ({ timeSeriesStats, isDark, activeFrameIndex }) => {
   const regionKeys = useMemo(() => {
     if (!Array.isArray(timeSeriesStats)) return [];
     const keys = new Set();
@@ -69,6 +69,23 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
   };
 
   const regionColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#22c55e'];
+  const showActiveDot = typeof activeFrameIndex === 'number';
+  const activePoint = showActiveDot && chartData[activeFrameIndex] ? chartData[activeFrameIndex] : null;
+
+  const renderActiveDot = (color) => (props) => {
+    if (!showActiveDot) return null;
+    if (props.index !== activeFrameIndex) return null;
+    return (
+      <circle
+        cx={props.cx}
+        cy={props.cy}
+        r={5}
+        fill={color}
+        stroke={isDark ? '#0f172a' : '#ffffff'}
+        strokeWidth={2}
+      />
+    );
+  };
 
   if (!chartData || chartData.length === 0 || !regionKeys.length || !statKeys.length) {
     return (
@@ -136,7 +153,7 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
                 type="monotone"
                 dataKey={region}
                 stroke={regionColors[index % regionColors.length]}
-                dot={false}
+                dot={showActiveDot ? renderActiveDot(regionColors[index % regionColors.length]) : false}
                 strokeWidth={2}
                 isAnimationActive={false}
                 name={region}
@@ -146,6 +163,31 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
         </ResponsiveContainer>
       </div>
 
+      {activePoint && (
+        <div
+          className={`mt-4 rounded-lg border px-4 py-3 text-sm ${
+            isDark ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-700'
+          }`}
+        >
+          <div className="mb-2 font-semibold">
+            Frame {activePoint.time + 1}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+            {regionKeys.map((region, index) => (
+              <div key={region} className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: regionColors[index % regionColors.length] }}
+                />
+                <span className="truncate">{region}</span>
+                <span className="ml-auto font-medium">
+                  {Number.isFinite(activePoint[region]) ? activePoint[region].toFixed(2) : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

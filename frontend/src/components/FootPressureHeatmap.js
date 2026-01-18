@@ -9,6 +9,8 @@ const FootPressureHeatmap = ({
 }) => {
   const canvasRef = useRef(null);
   const [showNumbers, setShowNumbers] = useState(false);
+  const minPressureValue = 0;
+  const maxPressureValue = 100;
 
   const resolvedData = Array.isArray(footPressureData)
     ? footPressureData
@@ -18,9 +20,8 @@ const FootPressureHeatmap = ({
 
   const getPressureColor = (pressure) => {
     // Lower value == higher pressure (darker)
-    const maxValue = 3700;
-    const clamped = Math.min(Math.max(pressure, 0), maxValue);
-    const inverted = 1 - clamped / maxValue; // 0..1 (higher is more pressure)
+    const clamped = Math.min(Math.max(pressure, minPressureValue), maxPressureValue);
+    const inverted = 1 - clamped / maxPressureValue; // 0..1 (higher is more pressure)
     // Map 0..1 to green->red gradient (low->high pressure)
     const hue = 120 * (1 - inverted); // 120=green, 0=red
     return `hsl(${hue}, 85%, 50%)`;
@@ -115,9 +116,8 @@ const FootPressureHeatmap = ({
 
         const color = getPressureColor(value);
         offCtx.fillStyle = color;
-        const maxValue = 3700;
-        const clamped = Math.min(Math.max(value, 0), maxValue);
-        const inverted = 1 - clamped / maxValue; // darker for higher pressure
+        const clamped = Math.min(Math.max(value, minPressureValue), maxPressureValue);
+        const inverted = 1 - clamped / maxPressureValue; // darker for higher pressure
         offCtx.globalAlpha = Math.min(0.85, 0.35 + inverted * 0.5);
         offCtx.fillRect(x, y, cellW, cellH);
       }
