@@ -1,0 +1,504 @@
+"""
+Interactive script to collect training data for skeleton pose with foot pressure.
+
+Records 5-second episodes at 3 Hz (15 matrices per episode) with simultaneous
+pose landmark detection using MediaPipe pose_landmarker_heavy model.
+
+Data consists of paired foot pressure signals and pose landmarks - no class labels.
+"""
+
+import asyncio
+import sys
+import numpy as np
+import os
+import time
+import threading
+import cv2
+from datetime import datetime
+from pathlib import Path
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from bleak import BleakClient, BleakScanner
+
+from backend.ble import MagicFrameAssembler
+from backend.decode import decode_frame_u16
+
+# BLE UART Service UUIDs (Nordic UART Service)
+UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
+
+# === Configuration ===
+DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUID scan if not found)
+
+NUM_ROWS = 12
+NUM_COLS = 8
+# Binary frame: magic(2) + frame_id(2) + matrix(12*8*2) = 196 bytes (same as backend/ble.py)
+PAYLOAD_LEN = 4 + NUM_ROWS * NUM_COLS * 2
+MAX_CLIP = 3700.0
+EPISODE_DURATION = 5.0  # seconds
+SAMPLING_RATE = 1.6  # Hz (matrices per second)
+MATRICES_PER_EPISODE = int(EPISODE_DURATION * SAMPLING_RATE)  # 15
+
+# Normalization parameters (matching frontend rescaleMatrix)
+IN_MIN = 1000.0
+IN_MAX = 5000.0
+OUT_MIN = 0.0
+OUT_MAX = 100.0
+
+# MediaPipe Configuration
+POSE_MODEL_PATH = "pose_landmarker_heavy.task"  # Path to MediaPipe pose model
+CAMERA_INDEX = 0  # Webcam index (usually 0 for default camera)
+NUM_POSE_LANDMARKS = 33  # MediaPipe Pose has 33 landmarks
+
+# Inactive coordinates (row, col) that should be ignored
+INACTIVE_COORDS = {
+    (0, 0), (0, 1), (0, 7), (1, 0),
+    (6, 7), (7, 7),
+    (8, 6), (8, 7), (9, 6), (9, 7), (10, 6), (10, 7), (11, 6), (11, 7)
+}
+
+DATA_DIR = Path('data/raw/skeleton')
+
+# Global state for BLE data
+latest_matrix = np.zeros((NUM_ROWS, NUM_COLS))
+rows_received = 0
+frame_complete = False
+ble_connected = False
+ble_stream_task = None
+
+# Global state for pose detection
+latest_pose_landmarks = None  # Will store array of shape (33, 3) for x, y, z coordinates
+pose_detector = None
+camera_running = False
+pose_thread = None
+cap = None
+
+
+def is_active(r, c):
+    """Check if a coordinate is active (not in inactive list)."""
+    return (r, c) not in INACTIVE_COORDS
+
+
+def rescale_matrix(matrix):
+    """
+    Rescale pressure matrix values to match frontend normalization.
+    
+    Maps values from [700, 3700] to [0, 100] with inversion:
+    - Values <= 0 -> -1
+    - Higher pressure (lower resistance) -> higher output value
+    - Matches frontend rescaleMatrix function
+    
+    Args:
+        matrix: numpy array of pressure values (can be 2D or 3D)
+    
+    Returns:
+        Rescaled matrix with same shape
+    """
+    in_range = IN_MAX - IN_MIN
+    out_range = OUT_MAX - OUT_MIN
+    
+    # Create output array with same shape
+    result = np.zeros_like(matrix, dtype=np.float32)
+    
+    # Handle values <= 0 -> set to -1
+    mask_invalid = matrix <= 0
+    result[mask_invalid] = -1.0
+    
+    # Scale valid values: ((value - inMin) / inRange) * outRange + outMin
+    mask_valid = ~mask_invalid
+    scaled = ((matrix[mask_valid] - IN_MIN) / in_range) * out_range + OUT_MIN
+    
+    # Clamp to [outMin, outMax]
+    scaled = np.clip(scaled, OUT_MIN, OUT_MAX)
+    
+    # Invert: outMax - scaled (so 3700 -> 0, 700 -> 100)
+    result[mask_valid] = OUT_MAX - scaled
+    
+    return result
+
+
+def collect_episode():
+    """Collect one episode (15 matrices over 5 seconds) with simultaneous pose landmarks."""
+    global latest_matrix, frame_complete, latest_pose_landmarks
+    
+    if not ble_connected:
+        raise RuntimeError("BLE device not connected!")
+    
+    matrices = []
+    pose_landmarks_list = []  # Store pose landmarks for each sample
+    start_time = time.time()
+    interval = 1.0 / SAMPLING_RATE  # ~0.333 seconds between samples
+    next_sample_time = start_time + interval
+    
+    print(f"\nRecording episode... (collecting {MATRICES_PER_EPISODE} matrices + pose landmarks)")
+    
+    # Track last matrix to avoid duplicates
+    last_matrix_hash = None
+    
+    while len(matrices) < MATRICES_PER_EPISODE:
+        current_time = time.time()
+        
+        # Check if it's time to sample
+        if current_time >= next_sample_time:
+            # Only sample if we have a complete frame
+            if frame_complete:
+                # Get the most recent complete matrix from BLE
+                current_matrix = latest_matrix.copy()
+                
+                # Create a simple hash to detect if matrix has changed
+                matrix_hash = hash(current_matrix.tobytes())
+                
+                # Only add if matrix has changed (new frame received)
+                if matrix_hash != last_matrix_hash:
+                    matrices.append(current_matrix.copy())
+                    
+                    # Capture pose landmarks simultaneously
+                    if latest_pose_landmarks is not None:
+                        pose_landmarks_list.append(latest_pose_landmarks.copy())
+                    else:
+                        # If no pose detected, store zeros (or NaN to indicate missing)
+                        pose_landmarks_list.append(np.zeros((NUM_POSE_LANDMARKS, 3)))
+                    
+                    elapsed = current_time - start_time
+                    pose_status = "✓" if latest_pose_landmarks is not None else "⚠"
+                    print(f"  [{len(matrices)}/{MATRICES_PER_EPISODE}] Collected at {elapsed:.2f}s {pose_status}", end='\r')
+                    last_matrix_hash = matrix_hash
+                    frame_complete = False  # Reset flag after sampling
+            
+            next_sample_time += interval
+        
+        # Small sleep to prevent CPU spinning
+        time.sleep(0.01)
+    
+    print(f"\n✓ Collected {len(matrices)} matrices and {len(pose_landmarks_list)} pose landmark sets")
+    
+    # Convert to numpy arrays
+    matrices_array = np.array(matrices)  # Shape: (15, 12, 8)
+    pose_landmarks_array = np.array(pose_landmarks_list)  # Shape: (15, 33, 3)
+    
+    return matrices_array, pose_landmarks_array
+
+
+def save_episode(matrices, pose_landmarks, episode_num):
+    """Save episode data to disk (foot sensor matrices + pose landmarks)."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"skeleton_ep{episode_num:02d}_{timestamp}.npz"
+    filepath = DATA_DIR / filename
+    
+    # Normalize matrices using rescaleMatrix logic
+    matrices_normalized = rescale_matrix(matrices)
+    
+    np.savez_compressed(
+        filepath,
+        matrices=matrices_normalized,  # Shape: (15, 12, 8) - normalized foot pressure sensor data
+        pose_landmarks=pose_landmarks,  # Shape: (15, 33, 3) - MediaPipe pose landmarks (x, y, z)
+        episode_num=episode_num,
+        timestamp=timestamp,
+        sampling_rate=SAMPLING_RATE,
+        episode_duration=EPISODE_DURATION,
+        num_pose_landmarks=NUM_POSE_LANDMARKS
+    )
+    
+    return filepath
+
+
+def count_episodes():
+    """Count how many episodes have been collected."""
+    if DATA_DIR.exists():
+        episodes = list(DATA_DIR.glob('*.npz'))
+        return len(episodes)
+    return 0
+
+
+def initialize_pose_detector():
+    global pose_detector
+    try:
+        base_options = python.BaseOptions(model_asset_path=POSE_MODEL_PATH)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO, # Matching the Viewer
+            output_segmentation_masks=False,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        pose_detector = vision.PoseLandmarker.create_from_options(options)
+        print("✓ Pose detector initialized in VIDEO mode!")
+        return True
+    except Exception as e:
+        print(f"❌ Initialization error: {e}")
+        return False
+
+
+def extract_pose_landmarks(detection_result):
+    # Change from .pose_landmarks to .pose_world_landmarks
+    if not detection_result.pose_world_landmarks or len(detection_result.pose_world_landmarks) == 0:
+        return None
+    
+    # Extract the meter-based 3D coordinates
+    world_landmarks = detection_result.pose_world_landmarks[0]
+    landmarks = np.zeros((NUM_POSE_LANDMARKS, 3))
+    for idx, landmark in enumerate(world_landmarks):
+        landmarks[idx] = [landmark.x, landmark.y, landmark.z]
+    
+    return landmarks
+
+
+def run_pose_detection():
+    """Run pose detection continuously in a background thread."""
+    global latest_pose_landmarks, camera_running, cap
+    
+    if pose_detector is None:
+        print("⚠ Pose detector not initialized. Skipping pose detection.")
+        return
+    
+    # Initialize camera
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        print(f"⚠ Warning: Could not open camera {CAMERA_INDEX}. Pose detection disabled.")
+        return
+    
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    camera_running = True
+    print("✓ Camera opened. Starting pose detection...")
+    
+    try:
+        while camera_running:
+            ret, frame = cap.read()
+            if not ret: break
+            
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            
+            # Use millisecond timestamp for the VIDEO mode tracker
+            timestamp_ms = int(time.time() * 1000)
+            
+            # Use .detect_for_video instead of .detect
+            detection_result = pose_detector.detect_for_video(mp_image, timestamp_ms)
+            
+            landmarks = extract_pose_landmarks(detection_result)
+            if landmarks is not None:
+                latest_pose_landmarks = landmarks.copy()
+    except Exception as e:
+        print(f"Error in pose detection thread: {e}")
+    finally:
+        if cap is not None:
+            cap.release()
+        camera_running = False
+        print("Pose detection stopped.")
+
+
+def start_ble_background_loop():
+    """Run the async BLE stream in a background thread. Uses binary protocol (magic 0xBEEF + frame) like backend/ble.py."""
+    global ble_connected
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def run_ble_stream():
+        global ble_connected
+        
+        device = None
+        
+        # Try to find device by name using filter (same method as ble.py)
+        if DEVICE_NAME:
+            print(f"Scanning for BLE device: {DEVICE_NAME}...")
+            def _match_name(d, _):
+                return d and d.name == DEVICE_NAME
+            device = await BleakScanner.find_device_by_filter(_match_name, timeout=10.0)
+        
+        # If not found by name, try scanning by service UUID
+        if not device:
+            print(f"Device '{DEVICE_NAME}' not found by name. Trying to scan by service UUID...")
+            devices = await BleakScanner.discover(timeout=10.0, service_uuids=[UART_SERVICE_UUID])
+            if devices:
+                print(f"Found {len(devices)} device(s) with service {UART_SERVICE_UUID}:")
+                for d in devices:
+                    print(f"  - {d.name or 'Unknown'} ({d.address})")
+                device = devices[0]  # Use first device found
+        
+        if device is None:
+            print(f"\n❌ BLE device not found")
+            print("\nTroubleshooting:")
+            print("  1. Make sure the Arduino is powered on")
+            print("  2. Check that the device is not connected to another device (phone, etc.)")
+            print("  3. Try resetting the Arduino")
+            print(f"  4. Verify the device name matches exactly: '{DEVICE_NAME}'")
+            ble_connected = False
+            return
+        
+        print(f"✓ Found device: {device.name or device.address}")
+        print(f"  Address: {device.address}")
+        print("Connecting...")
+        
+        assembler = MagicFrameAssembler(PAYLOAD_LEN)
+        
+        def _handler(sender, data: bytearray):
+            global frame_complete
+            try:
+                for payload in assembler.add_chunk(bytes(data)):
+                    _, arr = decode_frame_u16(payload, min_v=-1.0, max_v=8000.0, rows=NUM_ROWS, cols=NUM_COLS)
+                    latest_matrix[:] = arr
+                    frame_complete = True
+            except Exception as e:
+                print(f"BLE decode error: {e}")
+        
+        try:
+            async with BleakClient(device) as client:
+                print(f"✓ Connected to {device.name or device.address}!")
+                ble_connected = True
+                await client.start_notify(UART_TX_CHAR_UUID, _handler)
+                print("Waiting for data...")
+                try:
+                    while True:
+                        await asyncio.sleep(1.0)
+                finally:
+                    await client.stop_notify(UART_TX_CHAR_UUID)
+        except Exception as e:
+            print(f"❌ BLE connection error: {e}")
+            ble_connected = False
+    
+    loop.run_until_complete(run_ble_stream())
+
+
+def main():
+    """Main data collection loop."""
+    global ble_connected, camera_running, pose_thread
+    
+    # Create data directory
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Connect to BLE device
+    print("=" * 60)
+    print("Skeleton Pose Training Data Collection (BLE + Pose)")
+    print("=" * 60)
+    
+    # Initialize pose detector
+    print("\nInitializing MediaPipe pose detector...")
+    if not initialize_pose_detector():
+        print("⚠ Warning: Pose detection will be disabled. Continuing with foot sensor only...")
+        pose_detector_available = False
+    else:
+        pose_detector_available = True
+        # Start pose detection in background thread
+        pose_thread = threading.Thread(target=run_pose_detection, daemon=True)
+        pose_thread.start()
+        # Give camera a moment to initialize
+        time.sleep(1.0)
+    
+    # Start BLE connection in background thread
+    ble_thread = threading.Thread(target=start_ble_background_loop, daemon=True)
+    ble_thread.start()
+    
+    # Wait for connection and initial data
+    print("\nWaiting for BLE connection...")
+    connected = False
+    for _ in range(30):  # Wait up to 15 seconds
+        if ble_connected:
+            # Check if we've received data
+            if np.any(latest_matrix > 0):
+                print("✓ Sensor data received!")
+                connected = True
+                break
+        time.sleep(0.5)
+    
+    if not connected:
+        print("\n❌ Failed to connect to BLE device or receive data.")
+        print("Please check that the device is powered on and not connected to another device.")
+        camera_running = False
+        ble_connected = False
+        return
+    
+    print("\n" + "=" * 60)
+    print("Data Collection Interface")
+    print("=" * 60)
+    print(f"Each episode: {EPISODE_DURATION} seconds, {MATRICES_PER_EPISODE} matrices")
+    print(f"Pose landmarks: {'Enabled' if pose_detector_available else 'Disabled'}")
+    print("\nCommands:")
+    print("  - Press Enter to record an episode")
+    print("  - 'status' to see collection progress")
+    print("  - 'quit' to exit")
+    print("=" * 60)
+    
+    try:
+        while True:
+            # Show current status
+            episode_count = count_episodes()
+            print(f"\nCurrent collection status: {episode_count} episodes collected")
+            
+            # Get user input
+            user_input = input(f"\nPress Enter to record episode #{episode_count + 1}, or enter command (status/quit): ").strip().lower()
+            
+            if user_input == 'quit':
+                break
+            elif user_input == 'status':
+                continue
+            
+            # Determine episode number
+            episode_num = episode_count + 1
+            
+            # Countdown
+            print(f"\n{'='*60}")
+            print(f"Recording episode #{episode_num}")
+            print("Get ready...")
+            for i in range(3, 0, -1):
+                print(f"  {i}...")
+                time.sleep(1)
+            print("  GO!\n")
+            
+            # Collect episode
+            try:
+                matrices, pose_landmarks = collect_episode()
+                
+                if len(matrices) == MATRICES_PER_EPISODE:
+                    # Save episode (with pose landmarks)
+                    filepath = save_episode(matrices, pose_landmarks, episode_num)
+                    print(f"✓ Saved to: {filepath}")
+                    
+                    # Show pose detection stats
+                    if pose_detector_available:
+                        valid_poses = np.sum([np.any(pl > 0) for pl in pose_landmarks])
+                        print(f"  Pose detection: {valid_poses}/{len(pose_landmarks)} samples had valid poses")
+                else:
+                    print(f"⚠ Warning: Expected {MATRICES_PER_EPISODE} matrices, got {len(matrices)}")
+                    retry = input("Save anyway? (y/n): ").strip().lower()
+                    if retry == 'y':
+                        filepath = save_episode(matrices, pose_landmarks, episode_num)
+                        print(f"✓ Saved to: {filepath}")
+                    else:
+                        print("Episode discarded.")
+            except KeyboardInterrupt:
+                print("\n\nRecording interrupted. Episode discarded.")
+            except Exception as e:
+                print(f"\nError during recording: {e}")
+                print("Episode discarded.")
+    finally:
+        # Disconnect BLE and stop pose detection
+        ble_connected = False
+        camera_running = False
+        
+        # Wait a moment for threads to clean up
+        time.sleep(0.5)
+        
+        print("\n" + "=" * 60)
+        print("Data collection complete!")
+        print("=" * 60)
+        
+        # Final status
+        episode_count = count_episodes()
+        print(f"\nFinal collection status: {episode_count} episodes collected")
+        print()
+
+
+if __name__ == "__main__":
+    main()
