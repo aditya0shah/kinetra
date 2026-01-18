@@ -239,10 +239,44 @@ async def stream_payloads(
             await client.stop_notify(char_uuid)
 
 
+async def find_device_by_address(
+    device_address: str,
+    timeout: float = 10.0,
+    service_uuid: Optional[str] = None
+):
+    """Find BLE device by address/UUID.
+    
+    Args:
+        device_address: BLE device address (MAC address format) or UUID
+        timeout: Timeout for discovery
+        service_uuid: Optional service UUID to search for
+        
+    Returns:
+        BleakDevice object, or None if not found
+    """
+    # If direct connection fails, scan for the device
+    if service_uuid:
+        devices = await BleakScanner.discover(timeout=timeout, service_uuids=[service_uuid])
+        for device in devices:
+            if device.address.lower() == device_address.lower():
+                return device
+    
+    # Scan all devices
+    devices = await BleakScanner.discover(timeout=timeout)
+    for device in devices:
+        if device.address.lower() == device_address.lower():
+            return device
+    
+    # Try direct connection - BleakClient can work with address string
+    # This will be handled in stream_text_notifications
+    return None
+
+
 async def stream_text_notifications(
-    device_name: str,
-    char_uuid: str,
-    on_line: Callable[[str], None],
+    device_name: Optional[str] = None,
+    device_address: Optional[str] = None,
+    char_uuid: str = UART_TX_CHAR_UUID,
+    on_line: Callable[[str], None] = None,
     timeout: float = 10.0,
     service_uuid: Optional[str] = None,
     encoding: str = 'utf-8',
@@ -254,7 +288,8 @@ async def stream_text_notifications(
     Useful for UART-style text communication.
     
     Args:
-        device_name: Name of the device
+        device_name: Name of the device (optional, used if device_address not provided)
+        device_address: BLE device address/UUID (optional, takes priority over device_name)
         char_uuid: Characteristic UUID to subscribe to
         on_line: Callback function called with each complete line (str)
         timeout: Timeout for discovery and connection
@@ -262,9 +297,24 @@ async def stream_text_notifications(
         encoding: Text encoding (default: 'utf-8')
         errors: Error handling for decoding (default: 'ignore')
     """
-    device = await find_device_by_name(device_name, timeout, service_uuid)
-    if device is None:
-        raise RuntimeError(f"BLE device not found: {device_name}")
+    device = None
+    use_address_directly = False
+    
+    # Prefer device_address over device_name
+    if device_address:
+        print(f"Connecting to BLE device by address: {device_address}...")
+        device = await find_device_by_address(device_address, timeout, service_uuid)
+        # If not found via scanning, try direct connection (BleakClient accepts address string)
+        if device is None:
+            print(f"Device not found in scan, attempting direct connection by address...")
+            use_address_directly = True
+    elif device_name:
+        print(f"Scanning for BLE device: {device_name}...")
+        device = await find_device_by_name(device_name, timeout, service_uuid)
+        if device is None:
+            raise RuntimeError(f"BLE device not found: {device_name}")
+    else:
+        raise ValueError("Either device_name or device_address must be provided")
 
     buffer = ""
 
@@ -282,7 +332,13 @@ async def stream_text_notifications(
         except Exception as e:
             print(f"Data decoding error: {e}")
 
-    async with BleakClient(device) as client:
+    # Create client - use address directly if scanning failed, otherwise use device object
+    if use_address_directly:
+        client = BleakClient(device_address)
+    else:
+        client = BleakClient(device)
+    
+    async with client:
         await client.start_notify(char_uuid, _handler)
         try:
             while True:

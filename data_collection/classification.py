@@ -8,6 +8,7 @@ Classes: running, idle, tennis, baseball
 """
 
 import asyncio
+import sys
 import numpy as np
 import os
 import time
@@ -18,14 +19,20 @@ from pathlib import Path
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from utils.ble_utils import (
-    stream_text_notifications,
-    UART_SERVICE_UUID,
-    UART_TX_CHAR_UUID
-)
+
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from bleak import BleakClient, BleakScanner
+
+# BLE UART Service UUIDs (Nordic UART Service)
+UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+UART_TX_CHAR_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
+
 
 # === Configuration ===
-DEVICE_NAME = "PressureGrid"  # Must match Bluefruit.setName() in your Arduino code
+DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUID scan if not found)
 
 NUM_ROWS = 12
 NUM_COLS = 8
@@ -333,30 +340,63 @@ def start_ble_background_loop():
         """Stream BLE text notifications."""
         global ble_connected
         
-        print(f"Scanning for BLE device: {DEVICE_NAME}...")
-        print("(This may take up to 10 seconds...)")
+        device = None
         
-        try:
-            # Use the utils function to stream text notifications
-            # This will connect and keep the connection alive
-            ble_connected = True
-            await stream_text_notifications(
-                device_name=DEVICE_NAME,
-                char_uuid=UART_TX_CHAR_UUID,
-                on_line=on_ble_line,
-                timeout=10.0,
-                service_uuid=UART_SERVICE_UUID
-            )
-        except RuntimeError as e:
-            print(f"\n❌ {e}")
+        # Try to find device by name first
+        if DEVICE_NAME:
+            print(f"Scanning for BLE device: {DEVICE_NAME}...")
+            device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
+        
+        # If not found by name, try scanning by service UUID
+        if not device:
+            print(f"Device '{DEVICE_NAME}' not found by name. Trying to scan by service UUID...")
+            devices = await BleakScanner.discover(timeout=10.0, service_uuids=[UART_SERVICE_UUID])
+            if devices:
+                print(f"Found {len(devices)} device(s) with service {UART_SERVICE_UUID}:")
+                for d in devices:
+                    print(f"  - {d.name or 'Unknown'} ({d.address})")
+                device = devices[0]  # Use first device found
+        
+        if device is None:
+            print(f"\n❌ BLE device not found")
             print("\nTroubleshooting:")
             print("  1. Make sure the Arduino is powered on")
             print("  2. Check that the device is not connected to another device (phone, etc.)")
             print("  3. Try resetting the Arduino")
             print(f"  4. Verify the device name matches exactly: '{DEVICE_NAME}'")
             ble_connected = False
+            return
+        
+        print(f"✓ Found device: {device.name or device.address}")
+        print(f"  Address: {device.address}")
+        print("Connecting...")
+        
+        buffer = ""
+        
+        def _handler(sender, data: bytearray):
+            nonlocal buffer
+            try:
+                buffer += data.decode('utf-8', errors='ignore')
+                if '\n' in buffer:
+                    lines = buffer.split('\n')
+                    for line in lines[:-1]:
+                        on_ble_line(line.strip())
+                    buffer = lines[-1]
+            except Exception as e:
+                print(f"Data decoding error: {e}")
+        
+        try:
+            async with BleakClient(device) as client:
+                print(f"✓ Connected to {device.name or device.address}!")
+                ble_connected = True
+                await client.start_notify(UART_TX_CHAR_UUID, _handler)
+                try:
+                    while True:
+                        await asyncio.sleep(1.0)
+                finally:
+                    await client.stop_notify(UART_TX_CHAR_UUID)
         except Exception as e:
-            print(f"❌ BLE stream error: {e}")
+            print(f"❌ BLE connection error: {e}")
             ble_connected = False
     
     loop.run_until_complete(run_ble_stream())
