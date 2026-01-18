@@ -28,7 +28,7 @@ from bleak import BleakClient, BleakScanner
 
 # BLE UART Service UUIDs (Nordic UART Service)
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-UART_TX_CHAR_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
+UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
 
 
 # === Configuration ===
@@ -342,10 +342,12 @@ def start_ble_background_loop():
         
         device = None
         
-        # Try to find device by name first
+        # Try to find device by name using filter (same method as ble.py)
         if DEVICE_NAME:
             print(f"Scanning for BLE device: {DEVICE_NAME}...")
-            device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
+            def _match_name(d, _):
+                return d and d.name == DEVICE_NAME
+            device = await BleakScanner.find_device_by_filter(_match_name, timeout=10.0)
         
         # If not found by name, try scanning by service UUID
         if not device:
@@ -390,6 +392,7 @@ def start_ble_background_loop():
                 print(f"✓ Connected to {device.name or device.address}!")
                 ble_connected = True
                 await client.start_notify(UART_TX_CHAR_UUID, _handler)
+                print("Waiting for data...")
                 try:
                     while True:
                         await asyncio.sleep(1.0)
