@@ -1,7 +1,7 @@
 import json
 import sys
 import os
-from stats import calculate_region_stats, split_into_regions
+from stats import calculate_region_stats, split_into_regions, apply_ema_stats
 from db import (
         get_all_workouts,
         get_workout_by_id,
@@ -29,6 +29,8 @@ def create_app() -> Flask:
     
     # Track active sessions
     active_sessions = {}  # {workout_id: {'connected': bool, 'frame_count': int}}
+    ema_state = {}  # {workout_id: smoothed_stats}
+    EMA_ALPHA = 0.05
 
     @app.after_request
     def add_cors_headers(response):
@@ -148,16 +150,29 @@ def create_app() -> Flask:
             if not workout_id:
                 return jsonify({"error": "Missing required field: session_id"}), 400
 
+            prev_ema = ema_state.get(workout_id)
+            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
+            if smoothed_stats:
+                ema_state[workout_id] = smoothed_stats
+
             nodes = payload.get("nodes")
             timestamp = payload.get("timestamp")
-            save_pressure_data(workout_id, parsed, calculated_stats, nodes=nodes, timestamp=timestamp)
+            save_pressure_data(
+                workout_id,
+                parsed,
+                calculated_stats,
+                smoothed_stats=smoothed_stats,
+                nodes=nodes,
+                timestamp=timestamp
+            )
             
             # Return the calculated stats to frontend for visualization
             return jsonify({
                 "status": "success",
                 "data": {
                     "matrix": parsed,
-                    "stats": calculated_stats
+                    "stats": smoothed_stats or calculated_stats,
+                    "raw_stats": calculated_stats
                 }
             }), 200
             
@@ -189,6 +204,7 @@ def create_app() -> Flask:
         # Remove sessions after iteration
         for workout_id in sessions_to_remove:
             del active_sessions[workout_id]
+            ema_state.pop(workout_id, None)
         
         if sessions_to_remove:
             print(f"✅ Cleaned up {len(sessions_to_remove)} session(s) for client {client_id}")
@@ -228,11 +244,19 @@ def create_app() -> Flask:
             regions = split_into_regions(matrix_array)
             calculated_stats = calculate_region_stats(regions)
             
+            prev_ema = ema_state.get(workout_id)
+            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
+            if smoothed_stats:
+                ema_state[workout_id] = smoothed_stats
+                if workout_id in active_sessions:
+                    active_sessions[workout_id]['ema_stats'] = smoothed_stats
+
             # Save pressure data to MongoDB
             save_pressure_data(
                 workout_id, 
                 matrix, 
-                calculated_stats, 
+                calculated_stats,
+                smoothed_stats=smoothed_stats,
                 nodes=nodes, 
                 timestamp=timestamp
             )
@@ -242,7 +266,8 @@ def create_app() -> Flask:
                 active_sessions[workout_id]['frame_count'] += 1
             
             emit('frame_processed', {
-                'stats': calculated_stats,
+                'stats': smoothed_stats or calculated_stats,
+                'raw_stats': calculated_stats,
                 'frame_count': active_sessions.get(workout_id, {}).get('frame_count', 0),
                 'timestamp': timestamp
             }, room=workout_id)
@@ -265,17 +290,25 @@ def create_app() -> Flask:
             if not workout_id or not calculated_stats:
                 emit('error', {'message': 'Missing workout_id or stats'})
                 return
+            prev_ema = ema_state.get(workout_id)
+            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
+            if smoothed_stats:
+                ema_state[workout_id] = smoothed_stats
+                if workout_id in active_sessions:
+                    active_sessions[workout_id]['ema_stats'] = smoothed_stats
             # Persist a stats-only frame (matrix optional)
             save_pressure_data(
                 workout_id,
                 matrix if matrix is not None else [],
                 calculated_stats,
+                smoothed_stats=smoothed_stats,
                 nodes=nodes,
                 timestamp=timestamp
             )
             # Broadcast to session room
             emit('stats_update', {
-                'stats': calculated_stats,
+                'stats': smoothed_stats or calculated_stats,
+                'raw_stats': calculated_stats,
                 'timestamp': timestamp
             }, room=workout_id)
         except Exception as e:
@@ -295,6 +328,7 @@ def create_app() -> Flask:
                 frame_count = active_sessions[workout_id]['frame_count']
                 print(f"✅ Session {workout_id} ended cleanly. Total frames: {frame_count}")
                 del active_sessions[workout_id]
+                ema_state.pop(workout_id, None)
             else:
                 print(f"ℹ️ Session {workout_id} was already cleaned up")
             emit('session_ended', {'workout_id': workout_id})
@@ -320,8 +354,9 @@ def create_app() -> Flask:
                     last_frame = frames[-1] if frames else None
                     if workout_id and last_frame:
                         ts = last_frame.get('timestamp')
+                        smoothed_stats = last_frame.get('smoothed_stats') or last_frame.get('calculated_stats')
                         socketio.emit('stats_update', {
-                            'stats': last_frame.get('calculated_stats'),
+                            'stats': smoothed_stats,
                             'timestamp': getattr(ts, 'isoformat', lambda: ts)() if ts else ts
                         }, room=str(workout_id))
         except Exception as e:

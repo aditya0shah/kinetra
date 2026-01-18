@@ -52,7 +52,7 @@ const EpisodeDetail = () => {
   const mapFramesToStats = (frames = []) =>
     frames.map(frame => ({
       timestamp: frame?.timestamp,
-      ...(frame?.calculated_stats || {}),
+      ...(frame?.smoothed_stats || frame?.calculated_stats || {}),
     }));
 
   // Fetch workout details from backend when navigating to a specific episode
@@ -66,8 +66,9 @@ const EpisodeDetail = () => {
         if (Array.isArray(detail?.pressure_frames) && detail.pressure_frames.length > 0) {
           setTimeSeriesStats(prev => (prev.length > 0 ? prev : mapFramesToStats(detail.pressure_frames)));
           const lastStatsFrame = detail.pressure_frames[detail.pressure_frames.length - 1];
-          if (lastStatsFrame?.calculated_stats) {
-            setStatsData(lastStatsFrame.calculated_stats);
+          const latestStats = lastStatsFrame?.smoothed_stats || lastStatsFrame?.calculated_stats;
+          if (latestStats) {
+            setStatsData(latestStats);
           }
         }
       } catch (e) {

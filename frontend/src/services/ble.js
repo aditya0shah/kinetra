@@ -234,7 +234,8 @@ export const rescaleMatrix = (matrix) => {
   return matrix.map(row => row.map(value => {
     if (value <= 0) return -1;
     const scaled = ((value - inMin) / inRange) * outRange + outMin;
-    return Math.min(outMax, Math.max(outMin, scaled));
+    let scaled_2 = Math.min(outMax, Math.max(outMin, scaled));
+    return outMax - scaled_2;
   }));
 };
 

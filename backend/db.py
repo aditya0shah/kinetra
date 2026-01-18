@@ -120,7 +120,7 @@ def delete_workout(workout_id):
         return False
 
 
-def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None, timestamp=None):
+def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_stats=None, nodes=None, timestamp=None):
     """Save pressure data and calculated stats for a workout.
 
     Args:
@@ -143,6 +143,8 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
             'calculated_stats': calculated_stats,
             'timestamp': ts,
         }
+        if smoothed_stats is not None:
+            pressure_frame['smoothed_stats'] = smoothed_stats
 
         print(f"🧾 Saving pressure data to MongoDB")
 

@@ -135,6 +135,7 @@ const MetricsGraph = ({ timeSeriesStats, isDark, activeFrameIndex }) => {
             />
             <YAxis 
               stroke={isDark ? '#94a3b8' : '#64748b'}
+              domain={[0, 100]}
               label={{ value: statLabels[activeStat] || activeStat, angle: -90, position: 'insideLeft' }}
             />
             <Tooltip 
