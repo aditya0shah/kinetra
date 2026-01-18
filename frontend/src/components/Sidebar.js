@@ -10,7 +10,7 @@ const Sidebar = () => {
   const menuItems = [
     { name: 'Dashboard', icon: FiHome, path: '/' },
     { name: 'Workouts', icon: FiActivity, path: '/workouts' },
-    { name: 'Analytics', icon: FiBarChart2, path: '/analytics' }
+    { name: 'Analytics', icon: FiBarChart2, path: '/analytics' },
   ];
 
   return (

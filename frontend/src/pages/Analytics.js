@@ -1,6 +1,6 @@
 import React, { useContext, useState, useEffect } from 'react';
 import { ThemeContext } from '../context/ThemeContext';
-import { FiTrendingUp, FiBarChart2, FiTarget } from 'react-icons/fi';
+import { FiTarget } from 'react-icons/fi';
 import Header from '../components/Header';
 import { getWorkouts } from '../services/api';
 
@@ -23,15 +23,8 @@ const Analytics = () => {
   }, []);
 
   const totalWorkouts = workouts.length;
-  const totalCalories = workouts.reduce((sum, w) => sum + (w.calories || 0), 0);
-  const totalDuration = workouts.reduce((sum, w) => sum + (w.duration || 0), 0);
-  const avgHeartRate = workouts.length > 0 ? Math.round(workouts.reduce((sum, w) => sum + (w.avgHeartRate || 0), 0) / workouts.length) : 0;
-
   const stats = [
-    { label: 'Total Workouts', value: totalWorkouts, icon: FiTarget },
-    { label: 'Total Calories', value: totalCalories, icon: FiTrendingUp },
-    { label: 'Total Duration', value: `${totalDuration}m`, icon: FiBarChart2 },
-    { label: 'Avg Heart Rate', value: `${avgHeartRate} bpm`, icon: FiTrendingUp }
+    { label: 'Total Workouts', value: totalWorkouts, icon: FiTarget }
   ];
 
   return (
@@ -89,14 +82,6 @@ const Analytics = () => {
                     </p>
                     <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                       {workout.type} • {new Date(workout.date || new Date()).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className={`font-semibold ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>
-                      {workout.calories} cal
-                    </p>
-                    <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {workout.duration}m • {workout.avgHeartRate} bpm
                     </p>
                   </div>
                 </div>

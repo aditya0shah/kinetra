@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
-import { FiArrowRight, FiCalendar, FiClock, FiZap, FiHeart, FiTrash2 } from 'react-icons/fi';
+import { FiArrowRight, FiCalendar, FiTrash2 } from 'react-icons/fi';
 import Header from '../components/Header';
 import { getWorkouts, deleteWorkout as apiDeleteWorkout } from '../services/api';
 
@@ -120,31 +120,10 @@ const Workouts = () => {
                       {formatDate(workout.date)}
                     </span>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <FiClock className={`${isDark ? 'text-gray-500' : 'text-gray-400'}`} size={16} />
-                    <span className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {workout.duration} minutes
-                    </span>
-                  </div>
                 </div>
 
                 {/* Bottom Stats */}
-                <div className="flex items-center justify-between pt-4 border-t" style={{ borderColor: isDark ? '#1e293b' : '#e5e7eb' }}>
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1">
-                      <FiZap size={16} className={isDark ? 'text-orange-400' : 'text-orange-600'} />
-                      <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                        {workout.calories}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <FiHeart size={16} className={isDark ? 'text-red-400' : 'text-red-600'} />
-                      <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                        {workout.avgHeartRate}
-                      </span>
-                    </div>
-                  </div>
+                <div className="flex items-center justify-end pt-4 border-t" style={{ borderColor: isDark ? '#1e293b' : '#e5e7eb' }}>
                   <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
                     isWorkoutInProgress(workout._id || workout.id)
                       ? isDark
@@ -158,7 +137,11 @@ const Workouts = () => {
                       ? 'bg-gray-700 text-gray-300'
                       : 'bg-gray-200 text-gray-800'
                   }`}>
-                    {isWorkoutInProgress(workout._id || workout.id) ? '🔴 In Progress' : workout.status === 'completed' ? 'Completed' : 'Paused'}
+                    {isWorkoutInProgress(workout._id || workout.id)
+                      ? '🔴 In Progress'
+                      : workout.status === 'completed'
+                      ? 'Completed'
+                      : 'Incomplete'}
                   </div>
                 </div>
               </div>

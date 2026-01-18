@@ -56,8 +56,10 @@ export const connectWebSocket = () => {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     reconnectionAttempts: 5,
-    // Use polling transport in dev to avoid Werkzeug websocket 500 errors
-    transports: ['polling']
+    timeout: 20000,
+    path: '/socket.io',
+    // Prefer WebSocket with polling fallback
+    transports: ['websocket', 'polling'],
   });
 
   socket.on('connect', () => {

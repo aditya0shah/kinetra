@@ -1,6 +1,6 @@
 import React, { useContext, useState } from 'react';
 import { WorkoutContext } from '../context/WorkoutContext';
-import { FiX, FiHeart, FiZap } from 'react-icons/fi';
+import { FiX, FiHeart } from 'react-icons/fi';
 
 const ActiveSession = ({ isDark }) => {
   const { endSession } = useContext(WorkoutContext);
@@ -35,19 +35,11 @@ const ActiveSession = ({ isDark }) => {
           <p className="text-white text-4xl font-bold font-mono">{formatTime(elapsed)}</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="grid grid-cols-1 gap-3 mb-4">
           <div className="bg-white bg-opacity-10 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-2">
               <FiHeart className="text-red-300" size={16} />
               <p className="text-white text-xs">Heart Rate</p>
-            </div>
-            <p className="text-white text-lg font-semibold">-</p>
-          </div>
-
-          <div className="bg-white bg-opacity-10 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <FiZap className="text-yellow-300" size={16} />
-              <p className="text-white text-xs">Calories</p>
             </div>
             <p className="text-white text-lg font-semibold">-</p>
           </div>

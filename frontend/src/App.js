@@ -9,6 +9,7 @@ import Dashboard from './components/Dashboard';
 import Workouts from './pages/Workouts';
 import EpisodeDetail from './pages/EpisodeDetail';
 import Analytics from './pages/Analytics';
+import FloatingAIButton from './components/FloatingAIButton';
 
 function App() {
   return (
@@ -16,6 +17,9 @@ function App() {
       <ThemeProvider>
         <BluetoothProvider>
           <WorkoutProvider>
+            {/* Floating AI Coach Button */}
+            <FloatingAIButton />
+            
             <Routes>
               <Route path="/" element={<Layout><Dashboard /></Layout>} />
               <Route path="/workouts" element={<Layout><Workouts /></Layout>} />

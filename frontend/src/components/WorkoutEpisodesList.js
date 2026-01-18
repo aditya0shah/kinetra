@@ -1,5 +1,5 @@
 import React from 'react';
-import { FiClock, FiZap, FiHeart, FiPlay, FiTrash2 } from 'react-icons/fi';
+import { FiPlay, FiTrash2 } from 'react-icons/fi';
 import { deleteWorkout } from '../services/api';
 
 const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDark }) => {
@@ -81,33 +81,6 @@ const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDar
               </div>
 
               <div className="flex items-center gap-2 text-right">
-                <div className="hidden sm:flex flex-col items-end gap-2">
-                  <div className="flex items-center gap-1">
-                    <FiClock size={16} className={isDark ? 'text-blue-400' : 'text-blue-600'} />
-                    <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {workout.duration}m
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <FiZap size={16} className={isDark ? 'text-orange-400' : 'text-orange-600'} />
-                    <span className={`text-sm font-semibold ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {workout.calories}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1 px-3 py-1 rounded-full"
-                  style={{
-                    backgroundColor: selectedWorkout?._id === workout._id || selectedWorkout?.id === workout.id
-                      ? isDark ? '#064e3b' : '#d1fae5'
-                      : isDark ? '#334155' : '#f3f4f6'
-                  }}>
-                  <FiHeart size={14} className={isDark ? 'text-green-400' : 'text-green-600'} />
-                  <span className={`text-xs font-semibold ${isDark ? 'text-green-400' : 'text-green-700'}`}>
-                    {workout.avgHeartRate}
-                  </span>
-                </div>
-
                 <button
                   onClick={(e) => handleDelete(e, workout._id || workout.id)}
                   className={`p-2 rounded-lg transition-colors opacity-0 group-hover:opacity-100 ${

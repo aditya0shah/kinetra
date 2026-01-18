@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import React, { useMemo, useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts';
 
 /**
  * MetricsGraph Component
@@ -7,44 +7,98 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
  * - Line graphs: mean_force, sum_pressure, mean, std
  * - Single values: max, min
  */
-const MetricsGraph = ({ timeSeriesStats, isDark }) => {
-  // Transform time-series stats into plottable data
-  const chartData = useMemo(() => {
-    if (!timeSeriesStats || timeSeriesStats.length === 0) {
-      return [];
-    }
-
-    return timeSeriesStats.map((frame, idx) => {
-      // Average the metrics across all regions
-      let meanForceSum = 0, sumPressureSum = 0, meanSum = 0, stdSum = 0, maxVal = 0, minVal = Infinity;
-      let count = 0;
-
-      Object.keys(frame).forEach(key => {
-        if (key === 'timestamp') return;
-        if (typeof frame[key] === 'object' && frame[key] !== null) {
-          meanForceSum += frame[key].mean_force || 0;
-          sumPressureSum += frame[key].sum_pressure || 0;
-          meanSum += frame[key].mean || 0;
-          stdSum += frame[key].std || 0;
-          maxVal = Math.max(maxVal, frame[key].max || 0);
-          minVal = Math.min(minVal, frame[key].min || Infinity);
-          count++;
+const MetricsGraph = ({ timeSeriesStats, isDark, activeFrameIndex }) => {
+  const regionKeys = useMemo(() => {
+    if (!Array.isArray(timeSeriesStats)) return [];
+    const keys = new Set();
+    timeSeriesStats.forEach(frame => {
+      Object.keys(frame || {}).forEach(key => {
+        if (key !== 'timestamp' && typeof frame[key] === 'object' && frame[key] !== null) {
+          keys.add(key);
         }
       });
-
-      return {
-        time: idx,
-        mean_force: count > 0 ? meanForceSum / count : 0,
-        sum_pressure: count > 0 ? sumPressureSum / count : 0,
-        mean: count > 0 ? meanSum / count : 0,
-        std: count > 0 ? stdSum / count : 0,
-        max: maxVal,
-        min: minVal === Infinity ? 0 : minVal,
-      };
     });
+    return Array.from(keys);
   }, [timeSeriesStats]);
 
-  if (!chartData || chartData.length === 0) {
+  const statKeys = useMemo(() => {
+    if (!regionKeys.length || !Array.isArray(timeSeriesStats)) return [];
+    const sampleRegion = regionKeys[0];
+    const sampleStats = timeSeriesStats.find(frame => frame?.[sampleRegion])?.[sampleRegion] || {};
+    return Object.keys(sampleStats);
+  }, [regionKeys, timeSeriesStats]);
+
+  const [activeStat, setActiveStat] = useState(statKeys[0] || '');
+
+  useEffect(() => {
+    if (!statKeys.length) {
+      setActiveStat('');
+      return;
+    }
+    if (!statKeys.includes(activeStat)) {
+      setActiveStat(statKeys[0]);
+    }
+  }, [statKeys, activeStat]);
+
+  const chartData = useMemo(() => {
+    if (!timeSeriesStats || timeSeriesStats.length === 0 || !activeStat) {
+      return [];
+    }
+    return timeSeriesStats.map((frame, idx) => {
+      const point = { time: idx };
+      regionKeys.forEach(region => {
+        const regionStats = frame?.[region];
+        point[region] = regionStats?.[activeStat] ?? 0;
+      });
+      return point;
+    });
+  }, [timeSeriesStats, regionKeys, activeStat]);
+
+  const currentFrame = useMemo(() => {
+    if (!timeSeriesStats || timeSeriesStats.length === 0 || !activeStat) return null;
+    return timeSeriesStats[timeSeriesStats.length - 1];
+  }, [timeSeriesStats, activeStat]);
+
+  const eventFrameIndexes = useMemo(() => {
+    if (!Array.isArray(timeSeriesStats)) return [];
+    const indexes = new Set();
+    timeSeriesStats.forEach((frame, idx) => {
+      if (Array.isArray(frame?.events) && frame.events.length > 0) {
+        indexes.add(idx);
+      }
+    });
+    return Array.from(indexes);
+  }, [timeSeriesStats]);
+
+  const statLabels = {
+    mean_force: 'Mean Force',
+    sum_pressure: 'Sum Pressure',
+    mean: 'Mean',
+    std: 'Std Dev',
+    max: 'Max',
+    min: 'Min',
+  };
+
+  const regionColors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#22c55e'];
+  const showActiveDot = typeof activeFrameIndex === 'number';
+  const activePoint = showActiveDot && chartData[activeFrameIndex] ? chartData[activeFrameIndex] : null;
+
+  const renderActiveDot = (color) => (props) => {
+    if (!showActiveDot) return null;
+    if (props.index !== activeFrameIndex) return null;
+    return (
+      <circle
+        cx={props.cx}
+        cy={props.cy}
+        r={5}
+        fill={color}
+        stroke={isDark ? '#0f172a' : '#ffffff'}
+        strokeWidth={2}
+      />
+    );
+  };
+
+  if (!chartData || chartData.length === 0 || !regionKeys.length || !statKeys.length) {
     return (
       <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
         <h3 className={`text-lg font-semibold mb-4 ${isDark ? 'text-white' : 'text-gray-800'}`}>
@@ -57,18 +111,32 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
     );
   }
 
-  // Calculate current values (last frame)
-  const currentFrame = chartData[chartData.length - 1];
-
   return (
     <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
       <h3 className={`text-lg font-semibold mb-6 ${isDark ? 'text-white' : 'text-gray-800'}`}>
         Pressure Metrics Over Time
       </h3>
 
-      {/* Line Graph for mean_force, sum_pressure, mean, std */}
-      <div className={`rounded-lg p-4 mb-6 ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
-        <ResponsiveContainer width="100%" height={300}>
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        {statKeys.map(stat => (
+          <button
+            key={stat}
+            onClick={() => setActiveStat(stat)}
+            className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+              activeStat === stat
+                ? (isDark ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white')
+                : (isDark ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')
+            }`}
+          >
+            {statLabels[stat] || stat}
+          </button>
+        ))}
+      </div>
+
+      {/* Line Graph for active stat per region */}
+      <div className={`rounded-lg p-4 ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
+        <ResponsiveContainer width="100%" height={520}>
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#334155' : '#e2e8f0'} />
             <XAxis 
@@ -78,7 +146,8 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
             />
             <YAxis 
               stroke={isDark ? '#94a3b8' : '#64748b'}
-              label={{ value: 'Pressure (units)', angle: -90, position: 'insideLeft' }}
+              domain={[0, 100]}
+              label={{ value: statLabels[activeStat] || activeStat, angle: -90, position: 'insideLeft' }}
             />
             <Tooltip 
               contentStyle={{
@@ -89,66 +158,58 @@ const MetricsGraph = ({ timeSeriesStats, isDark }) => {
               labelStyle={{ color: isDark ? '#e2e8f0' : '#1f2937' }}
             />
             <Legend wrapperStyle={{ color: isDark ? '#e2e8f0' : '#1f2937' }} />
-            
-            <Line 
-              type="monotone" 
-              dataKey="mean_force" 
-              stroke="#3b82f6" 
-              dot={false}
-              strokeWidth={2}
-              isAnimationActive={false}
-              name="Mean Force"
-            />
-            <Line 
-              type="monotone" 
-              dataKey="sum_pressure" 
-              stroke="#10b981" 
-              dot={false}
-              strokeWidth={2}
-              isAnimationActive={false}
-              name="Sum Pressure"
-            />
-            <Line 
-              type="monotone" 
-              dataKey="mean" 
-              stroke="#f59e0b" 
-              dot={false}
-              strokeWidth={2}
-              isAnimationActive={false}
-              name="Mean"
-            />
-            <Line 
-              type="monotone" 
-              dataKey="std" 
-              stroke="#8b5cf6" 
-              dot={false}
-              strokeWidth={2}
-              isAnimationActive={false}
-              name="Std Dev"
-            />
+
+            {eventFrameIndexes.map((index) => (
+              <ReferenceArea
+                key={`event-frame-${index}`}
+                x1={index - 1.5}
+                x2={index + 1.5}
+                fill="rgba(239, 68, 68, 0.15)"
+                strokeOpacity={0}
+              />
+            ))}
+
+            {regionKeys.map((region, index) => (
+              <Line
+                key={region}
+                type="monotone"
+                dataKey={region}
+                stroke={regionColors[index % regionColors.length]}
+                dot={showActiveDot ? renderActiveDot(regionColors[index % regionColors.length]) : false}
+                strokeWidth={2}
+                isAnimationActive={false}
+                name={region}
+              />
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Max/Min Value Display */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-100'}`}>
-          <p className={`text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-            Max Pressure
-          </p>
-          <p className={`text-3xl font-bold ${isDark ? 'text-red-400' : 'text-red-600'}`}>
-            {currentFrame.max.toFixed(2)}
-          </p>
+      {activePoint && (
+        <div
+          className={`mt-4 rounded-lg border px-4 py-3 text-sm ${
+            isDark ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-700'
+          }`}
+        >
+          <div className="mb-2 font-semibold">
+            Frame {activePoint.time + 1}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+            {regionKeys.map((region, index) => (
+              <div key={region} className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: regionColors[index % regionColors.length] }}
+                />
+                <span className="truncate">{region}</span>
+                <span className="ml-auto font-medium">
+                  {Number.isFinite(activePoint[region]) ? activePoint[region].toFixed(2) : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-100'}`}>
-          <p className={`text-sm font-semibold mb-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-            Min Pressure
-          </p>
-          <p className={`text-3xl font-bold ${isDark ? 'text-green-400' : 'text-green-600'}`}>
-            {currentFrame.min.toFixed(2)}
-          </p>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

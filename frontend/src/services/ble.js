@@ -200,7 +200,7 @@ export const decodePayloadU16 = (payload, { minV, maxV }) => {
 
 export const decodeFrameU16 = (
   payload,
-  { minV, maxV, rows = 12, cols = 8 }
+  { minV, maxV, rows = 13, cols = 9 }
 ) => {
   const bytes = toUint8Array(payload);
   const expected = 4 + rows * cols * 2;
@@ -217,6 +217,25 @@ export const decodeFrameU16 = (
   for (let r = 0; r < rows; r += 1) {
     matrix.push(values.slice(r * cols, (r + 1) * cols));
   }
-  return { frameId, matrix };
+
+  const rescaledMatrix = rescaleMatrix(matrix);
+  return { frameId, matrix: rescaledMatrix }; 
+};
+
+
+export const rescaleMatrix = (matrix) => {
+  const inMin = 1000;
+  const inMax = 5000;
+  const outMin = 0;
+  const outMax = 100;
+  const inRange = inMax - inMin;
+  const outRange = outMax - outMin;
+
+  return matrix.map(row => row.map(value => {
+    if (value <= 0) return -1;
+    const scaled = ((value - inMin) / inRange) * outRange + outMin;
+    let scaled_2 = Math.min(outMax, Math.max(outMin, scaled));
+    return outMax - scaled_2;
+  }));
 };
 
