@@ -36,7 +36,6 @@ DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUI
 
 NUM_ROWS = 12
 NUM_COLS = 8
-MAX_CLIP = 3700.0
 EPISODE_DURATION = 5.0  # seconds
 SAMPLING_RATE = 1.6  # Hz (matrices per second)
 MATRICES_PER_EPISODE = int(EPISODE_DURATION * SAMPLING_RATE)  # 15
@@ -114,18 +113,6 @@ def parse_ble_line(line):
             
             try:
                 res = float(val_str.strip())
-                
-                # Handle inactive coordinates
-                if not is_active(r_idx, c_idx):
-                    latest_matrix[r_idx, c_idx] = MAX_CLIP
-                    continue
-                
-                # Treat -1 or non-positive as MAX_CLIP
-                if res <= 0:
-                    res = MAX_CLIP
-                else:
-                    res = min(res, MAX_CLIP)
-                
                 latest_matrix[r_idx, c_idx] = res
             except (ValueError, IndexError):
                 continue
@@ -217,7 +204,7 @@ def save_episode(matrices, pose_landmarks, class_label, episode_num):
     
     np.savez_compressed(
         filepath,
-        matrices=matrices,  # Shape: (15, 12, 8) - foot pressure sensor data
+        matrices=matrices,  # Shape: (15, 12, 8) - raw foot pressure sensor data
         pose_landmarks=pose_landmarks,  # Shape: (15, 33, 3) - MediaPipe pose landmarks (x, y, z)
         class_label=class_label,
         episode_num=episode_num,

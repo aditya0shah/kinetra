@@ -23,8 +23,8 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # === Configuration (matching classification.py) ===
-NUM_ROWS = 12
-NUM_COLS = 8
+NUM_ROWS = 13
+NUM_COLS = 9
 MAX_CLIP = 3700.0
 EPISODE_DURATION = 5.0  # seconds
 SAMPLING_RATE = 3.0  # Hz (matrices per second)
