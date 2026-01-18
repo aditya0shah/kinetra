@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { FiMic, FiX } from 'react-icons/fi';
 import { LiveKitRoom, RoomAudioRenderer, useVoiceAssistant } from '@livekit/components-react';
 import '@livekit/components-styles';
@@ -9,6 +10,12 @@ const SANDBOX_API = 'https://cloud-api.livekit.io/api/sandbox/connection-details
 const FloatingAIButton = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const location = useLocation();
+  
+  // Extract workout ID from URL if on episode page
+  const workoutId = location.pathname.includes('/episode/') 
+    ? location.pathname.split('/episode/')[1] 
+    : null;
 
   return (
     <>
@@ -39,7 +46,7 @@ const FloatingAIButton = () => {
 
       {/* Floating Modal */}
       {isOpen && (
-        <AICoachModal onClose={() => setIsOpen(false)} />
+        <AICoachModal onClose={() => setIsOpen(false)} workoutId={workoutId} />
       )}
     </>
   );
@@ -48,7 +55,7 @@ const FloatingAIButton = () => {
 /**
  * AI Coach Modal - Floating window with agent interface
  */
-function AICoachModal({ onClose }) {
+function AICoachModal({ onClose, workoutId }) {
   const [connectionDetails, setConnectionDetails] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState(null);
@@ -65,12 +72,11 @@ function AICoachModal({ onClose }) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          room_name: `kinetra-session-${Date.now()}`,
+          room_name: `kinetra-session-${workoutId ? 'workout-' + workoutId + '-' : ''}${Date.now()}`,
           participant_name: `user-${Math.random().toString(36).substring(7)}`,
           room_config: {
             agent_dispatch: {
               agent_name: 'voice-assistant',
-              metadata: JSON.stringify({ type: 'fitness-coach' }),
             },
           },
         }),
