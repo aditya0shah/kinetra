@@ -5,6 +5,9 @@ import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple, Optional
+import os
+import json
+from tqdm import tqdm
 
 
 class FootSensorDataset(Dataset):
@@ -64,7 +67,7 @@ class SportClassifier(nn.Module):
     4. FC: Final classification head
     """
     def __init__(self, num_classes=4, hidden_size=128, num_layers=2, 
-                 use_attention=False, dropout=0.3):
+                 use_attention=False, dropout=0.5):
         super(SportClassifier, self).__init__()
         
         # Spatial Feature Extractor (CNN)
@@ -288,3 +291,407 @@ def create_datasets(data_dir: str = 'data/raw',
             print(f"Warning: Test split '{test_split}' not found. Skipping test dataset.")
     
     return train_dataset, val_dataset, test_dataset, labels_map
+
+
+def train_epoch(model, dataloader, criterion, optimizer, device, epoch=0):
+    """
+    Train the model for one epoch.
+    
+    Args:
+        model: The neural network model
+        dataloader: DataLoader for training data
+        criterion: Loss function
+        optimizer: Optimizer
+        device: Device to run on (cuda/cpu)
+        epoch: Current epoch number (for logging)
+    
+    Returns:
+        Average training loss, accuracy
+    """
+    model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    
+    pbar = tqdm(dataloader, desc=f'Epoch {epoch+1} [Train]')
+    for batch_idx, (data, labels) in enumerate(pbar):
+        data, labels = data.to(device), labels.to(device)
+        
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = model(data)
+        loss = criterion(outputs, labels)
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        # Statistics
+        total_loss += loss.item()
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+        
+        # Update progress bar
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'acc': f'{100 * correct / total:.2f}%'
+        })
+    
+    avg_loss = total_loss / len(dataloader)
+    accuracy = 100 * correct / total
+    
+    return avg_loss, accuracy
+
+
+def validate(model, dataloader, criterion, device, split_name='Val'):
+    """
+    Validate the model on a dataset.
+    
+    Args:
+        model: The neural network model
+        dataloader: DataLoader for validation/test data
+        criterion: Loss function
+        device: Device to run on (cuda/cpu)
+        split_name: Name of the split (for logging)
+    
+    Returns:
+        Average validation loss, accuracy
+    """
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        pbar = tqdm(dataloader, desc=f'[{split_name}]')
+        for data, labels in pbar:
+            data, labels = data.to(device), labels.to(device)
+            
+            # Forward pass
+            outputs = model(data)
+            loss = criterion(outputs, labels)
+            
+            # Statistics
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'acc': f'{100 * correct / total:.2f}%'
+            })
+    
+    avg_loss = total_loss / len(dataloader)
+    accuracy = 100 * correct / total
+    
+    return avg_loss, accuracy
+
+
+def save_model(model, optimizer, epoch, loss, accuracy, labels_map, filepath):
+    """
+    Save model checkpoint.
+    
+    Args:
+        model: The neural network model
+        optimizer: Optimizer state
+        epoch: Current epoch number
+        loss: Current loss value
+        accuracy: Current accuracy
+        labels_map: Labels mapping dictionary
+        filepath: Path to save the checkpoint
+    """
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+        'accuracy': accuracy,
+        'labels_map': labels_map,
+        'model_config': {
+            'num_classes': len(labels_map),
+            'hidden_size': model.rnn.hidden_size,
+            'num_layers': model.rnn.num_layers,
+            'use_attention': model.use_attention,
+        }
+    }
+    
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+    
+    torch.save(checkpoint, filepath)
+    print(f"Model saved to {filepath}")
+
+
+def load_model(filepath, device='cpu'):
+    """
+    Load model checkpoint.
+    
+    Args:
+        filepath: Path to the checkpoint file
+        device: Device to load the model on
+    
+    Returns:
+        model, optimizer, epoch, labels_map, checkpoint dictionary
+    """
+    checkpoint = torch.load(filepath, map_location=device)
+    
+    # Reconstruct model from checkpoint
+    config = checkpoint['model_config']
+    model = SportClassifier(
+        num_classes=config['num_classes'],
+        hidden_size=config['hidden_size'],
+        num_layers=config['num_layers'],
+        use_attention=config['use_attention']
+    )
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    
+    # Create optimizer (you'll need to recreate it with the same parameters)
+    optimizer = torch.optim.Adam(model.parameters())
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    epoch = checkpoint['epoch']
+    labels_map = checkpoint['labels_map']
+    
+    return model, optimizer, epoch, labels_map, checkpoint
+
+
+def train_model(
+    model,
+    train_dataloader,
+    val_dataloader,
+    num_epochs=50,
+    learning_rate=0.001,
+    device='cuda',
+    save_dir='models/checkpoints',
+    save_best=True,
+    patience=10,
+    labels_map=None
+):
+    """
+    Complete training pipeline.
+    
+    Args:
+        model: The neural network model
+        train_dataloader: DataLoader for training data
+        val_dataloader: DataLoader for validation data (can be None)
+        num_epochs: Number of training epochs
+        learning_rate: Learning rate for optimizer
+        device: Device to train on ('cuda' or 'cpu')
+        save_dir: Directory to save model checkpoints
+        save_best: Whether to save best model based on validation accuracy
+        patience: Early stopping patience (epochs without improvement)
+        labels_map: Labels mapping dictionary
+    
+    Returns:
+        Training history dictionary
+    """
+    model.to(device)
+    
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5,
+    )
+    
+    # Training history
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': []
+    }
+    
+    best_val_acc = 0.0
+    epochs_without_improvement = 0
+    best_model_path = os.path.join(save_dir, 'best_model.pth')
+    
+    print(f"Starting training on {device}")
+    print(f"Training samples: {len(train_dataloader.dataset)}")
+    if val_dataloader:
+        print(f"Validation samples: {len(val_dataloader.dataset)}")
+    print(f"Number of classes: {len(labels_map) if labels_map else 'unknown'}")
+    print("-" * 60)
+    
+    for epoch in range(num_epochs):
+        # Train
+        train_loss, train_acc = train_epoch(
+            model, train_dataloader, criterion, optimizer, device, epoch
+        )
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        
+        # Validate
+        if val_dataloader:
+            val_loss, val_acc = validate(model, val_dataloader, criterion, device)
+            history['val_loss'].append(val_loss)
+            history['val_acc'].append(val_acc)
+            
+            # Learning rate scheduling
+            scheduler.step(val_loss)
+            
+            # Save best model
+            if save_best and val_acc > best_val_acc:
+                best_val_acc = val_acc
+                epochs_without_improvement = 0
+                save_model(
+                    model, optimizer, epoch, val_loss, val_acc,
+                    labels_map, best_model_path
+                )
+            else:
+                epochs_without_improvement += 1
+            
+            print(f"Epoch {epoch+1}/{num_epochs} - "
+                  f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
+                  f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+            
+            # Early stopping
+            if patience > 0 and epochs_without_improvement >= patience:
+                print(f"\nEarly stopping at epoch {epoch+1} "
+                      f"(no improvement for {patience} epochs)")
+                break
+        else:
+            # No validation set, just update learning rate based on train loss
+            scheduler.step(train_loss)
+            print(f"Epoch {epoch+1}/{num_epochs} - "
+                  f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}.pth')
+            save_model(
+                model, optimizer, epoch, train_loss, train_acc,
+                labels_map, checkpoint_path
+            )
+    
+    print("\nTraining completed!")
+    if val_dataloader and save_best:
+        print(f"Best validation accuracy: {best_val_acc:.2f}%")
+        print(f"Best model saved to: {best_model_path}")
+    
+    return history
+
+
+if __name__ == '__main__':
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Train Sport Classifier Model')
+    parser.add_argument('--data-dir', type=str, default='data/raw',
+                        help='Base data directory')
+    parser.add_argument('--train-split', type=str, default='raw',
+                        help='Training data split name')
+    parser.add_argument('--test-split', type=str, default='test',
+                        help='Test data split name')
+    parser.add_argument('--train-val-ratio', type=float, default=0.8,
+                        help='Train/validation split ratio')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=50,
+                        help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=0.001,
+                        help='Learning rate')
+    parser.add_argument('--hidden-size', type=int, default=128,
+                        help='GRU hidden size')
+    parser.add_argument('--num-layers', type=int, default=2,
+                        help='Number of GRU layers')
+    parser.add_argument('--dropout', type=float, default=0.3,
+                        help='Dropout rate')
+    parser.add_argument('--use-attention', action='store_true',
+                        help='Use temporal attention')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device to use (cuda/cpu)')
+    parser.add_argument('--save-dir', type=str, default='models/checkpoints',
+                        help='Directory to save checkpoints')
+    parser.add_argument('--patience', type=int, default=10,
+                        help='Early stopping patience')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed')
+    
+    args = parser.parse_args()
+    
+    # Set random seeds for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+    
+    # Set device
+    device = args.device if torch.cuda.is_available() and args.device == 'cuda' else 'cpu'
+    print(f"Using device: {device}")
+    
+    # Create datasets
+    train_dataset, val_dataset, test_dataset, labels_map = create_datasets(
+        data_dir=args.data_dir,
+        train_split=args.train_split,
+        test_split=args.test_split,
+        train_val_ratio=args.train_val_ratio,
+        random_seed=args.seed
+    )
+    
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=2
+    )
+    
+    val_loader = None
+    if val_dataset:
+        val_loader = DataLoader(
+            val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2
+        )
+    
+    test_loader = None
+    if test_dataset:
+        test_loader = DataLoader(
+            test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2
+        )
+    
+    # Create model
+    num_classes = len(labels_map)
+    model = SportClassifier(
+        num_classes=num_classes,
+        hidden_size=args.hidden_size,
+        num_layers=args.num_layers,
+        use_attention=args.use_attention,
+        dropout=args.dropout
+    )
+    
+    print(f"\nModel architecture:")
+    print(f"  Classes: {num_classes}")
+    print(f"  Hidden size: {args.hidden_size}")
+    print(f"  GRU layers: {args.num_layers}")
+    print(f"  Attention: {args.use_attention}")
+    print(f"  Dropout: {args.dropout}")
+    print("-" * 60)
+    
+    # Train model
+    history = train_model(
+        model=model,
+        train_dataloader=train_loader,
+        val_dataloader=val_loader,
+        num_epochs=args.epochs,
+        learning_rate=args.lr,
+        device=device,
+        save_dir=args.save_dir,
+        patience=args.patience,
+        labels_map=labels_map
+    )
+    
+    # Evaluate on test set if available
+    if test_loader:
+        print("\n" + "=" * 60)
+        print("Evaluating on test set...")
+        criterion = nn.CrossEntropyLoss()
+        test_loss, test_acc = validate(model, test_loader, criterion, device, 'Test')
+        print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
+    
+    # Save training history
+    history_path = os.path.join(args.save_dir, 'training_history.json')
+    os.makedirs(args.save_dir, exist_ok=True)
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    print(f"\nTraining history saved to: {history_path}")
