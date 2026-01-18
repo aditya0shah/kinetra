@@ -18,7 +18,6 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 client = None
 db = None
 workouts_collection = None
-sessions_collection = None
 mongodb_available = False
 
 if MONGODB_URI:
@@ -33,7 +32,6 @@ if MONGODB_URI:
         # Database and collections
         db = client['kinetra']
         workouts_collection = db['workouts']
-        sessions_collection = db['sessions']
         mongodb_available = True
 
     except Exception as e:
@@ -122,20 +120,6 @@ def delete_workout(workout_id):
         return False
 
 
-def save_session_stats(session_id, stats_data):
-    """Save session statistics to the database"""
-    if not mongodb_available:
-        raise Exception("MongoDB not available")
-
-    session = {
-        'session_id': session_id,
-        'stats': stats_data,
-        'timestamp': datetime.utcnow()
-    }
-    result = sessions_collection.insert_one(session)
-    return str(result.inserted_id)
-
-
 def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None, timestamp=None):
     """Save pressure data and calculated stats for a workout.
 
@@ -146,7 +130,7 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
         nodes: Optional list of node objects with positions and pressures.
         timestamp: Optional epoch ms or ISO timestamp for the frame.
     """
-    if not mongodb_available or sessions_collection is None:
+    if not mongodb_available or workouts_collection is None:
         raise Exception("MongoDB not available")
 
     try:
@@ -155,7 +139,6 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
 
         # Create pressure frame document
         pressure_frame = {
-            'workout_id': str(workout_id),
             'pressure_matrix': pressure_matrix,
             'calculated_stats': calculated_stats,
             'timestamp': ts,
@@ -167,9 +150,15 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
         if nodes is not None:
             pressure_frame['nodes'] = nodes
 
-        # Insert the pressure frame
-        result = sessions_collection.insert_one(pressure_frame)
-        return str(result.inserted_id)
+        # Append frame to the workout document
+        result = workouts_collection.update_one(
+            {'_id': ObjectId(workout_id)},
+            {
+                '$push': {'pressure_frames': pressure_frame},
+                '$set': {'updated_at': datetime.utcnow()},
+            }
+        )
+        return result.modified_count > 0
     except Exception as e:
         print(f"Error saving pressure data: {e}")
         raise e

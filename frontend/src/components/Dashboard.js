@@ -28,10 +28,7 @@ const Dashboard = () => {
                   name: 'New Workout Session',
                   type: 'Running',
                   status: 'in-progress',
-                  videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
-                  timeSeriesData: [],
-                  footPressureData: [],
-                  skeletonData: []
+                  videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4'
                 };
 
                 const newWorkout = await createWorkout(workoutData);

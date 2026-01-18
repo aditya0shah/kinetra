@@ -1,8 +1,13 @@
 import React, { useContext } from 'react';
-import { FiBluetooth, FiMoon, FiSun } from 'react-icons/fi';
+import { FiArrowLeft, FiBluetooth, FiMoon, FiSun } from 'react-icons/fi';
 import { BluetoothContext } from '../context/BluetoothContext';
 
-const Header = ({ toggleTheme, isDark }) => {
+const Header = ({
+  toggleTheme,
+  isDark,
+  showBackToWorkouts = false,
+  onBackToWorkouts,
+}) => {
   const {
     isSupported,
     isConnecting,
@@ -28,6 +33,17 @@ const Header = ({ toggleTheme, isDark }) => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
+            {showBackToWorkouts && (
+              <button
+                onClick={onBackToWorkouts}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                  isDark ? 'bg-slate-700 hover:bg-slate-600 text-blue-400' : 'bg-blue-100 hover:bg-blue-200 text-blue-600'
+                }`}
+              >
+                <FiArrowLeft size={16} />
+                <span className="text-xs font-semibold">Back to Workouts</span>
+              </button>
+            )}
             <div className={`w-10 h-10 rounded-lg ${isDark ? 'bg-gradient-to-br from-blue-500 to-green-500' : 'bg-gradient-to-br from-blue-600 to-green-600'} flex items-center justify-center`}>
               <span className="text-white font-bold text-lg">K</span>
             </div>

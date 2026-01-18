@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
 import { BluetoothContext } from '../context/BluetoothContext';
-import { FiArrowLeft, FiDownload, FiShare2 } from 'react-icons/fi';
 import Header from '../components/Header';
 import FootPressureHeatmap from '../components/FootPressureHeatmap';
 import TimeSeriesChart from '../components/TimeSeriesChart';
@@ -314,17 +313,13 @@ const EpisodeDetail = () => {
   if (!workout) {
     return (
       <div className={`min-h-screen transition-colors duration-300 ${isDark ? 'bg-slate-900' : 'bg-gradient-to-br from-blue-50 to-green-50'}`}>
-        <Header toggleTheme={toggleTheme} isDark={isDark} />
+        <Header
+          toggleTheme={toggleTheme}
+          isDark={isDark}
+          showBackToWorkouts
+          onBackToWorkouts={() => navigate('/workouts')}
+        />
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <button
-            onClick={() => navigate('/workouts')}
-            className={`flex items-center gap-2 mb-6 px-4 py-2 rounded-lg transition-colors ${
-              isDark ? 'bg-slate-800 hover:bg-slate-700 text-blue-400' : 'bg-white hover:bg-gray-50 text-blue-600'
-            }`}
-          >
-            <FiArrowLeft size={20} />
-            Back to Workouts
-          </button>
           <div className={`text-center py-16 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
             <p className="text-xl">Workout not found</p>
           </div>
@@ -335,21 +330,16 @@ const EpisodeDetail = () => {
 
   return (
     <div className={`min-h-screen transition-colors duration-300 ${isDark ? 'bg-slate-900' : 'bg-gradient-to-br from-blue-50 to-green-50'}`}>
-      <Header toggleTheme={toggleTheme} isDark={isDark} />
+      <Header
+        toggleTheme={toggleTheme}
+        isDark={isDark}
+        showBackToWorkouts
+        onBackToWorkouts={() => navigate('/workouts')}
+      />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Top Control Bar */}
-        <div className="flex items-center justify-between mb-6">
-          <button
-            onClick={() => navigate('/workouts')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-              isDark ? 'bg-slate-800 hover:bg-slate-700 text-blue-400' : 'bg-white hover:bg-gray-50 text-blue-600'
-            }`}
-          >
-            <FiArrowLeft size={20} />
-            Back to Workouts
-          </button>
-
+        <div className="flex items-center justify-end mb-6">
           {/* Controls */}
           <div className="flex items-center gap-3">
             {workout.status !== 'completed' && (
@@ -377,27 +367,15 @@ const EpisodeDetail = () => {
         </div>
 
         {/* Header Section */}
-        <div className={`rounded-lg shadow-lg p-8 mb-8 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-          <div className="flex items-center justify-between mb-4">
+        <div className={`rounded-lg shadow-lg p-4 mb-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
+          <div className="flex items-center justify-between">
             <div>
-              <h1 className={`text-4xl font-bold mb-2 ${isDark ? 'text-white' : 'text-gray-900'}`}>
+              <h1 className={`text-3xl font-bold mb-1 ${isDark ? 'text-white' : 'text-gray-900'}`}>
                 {workout.name}
               </h1>
-              <p className={`text-lg ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+              <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                 {workout.type} • {new Date(workout.date || new Date()).toLocaleDateString()} at {new Date(workout.date || new Date()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </p>
-            </div>
-            <div className="flex gap-2">
-              <button className={`p-3 rounded-lg transition-colors ${
-                isDark ? 'bg-slate-700 hover:bg-slate-600 text-blue-400' : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-              }`}>
-                <FiDownload size={24} />
-              </button>
-              <button className={`p-3 rounded-lg transition-colors ${
-                isDark ? 'bg-slate-700 hover:bg-slate-600 text-green-400' : 'bg-gray-100 hover:bg-gray-200 text-green-600'
-              }`}>
-                <FiShare2 size={24} />
-              </button>
             </div>
           </div>
 

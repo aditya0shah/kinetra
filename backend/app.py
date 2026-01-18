@@ -8,9 +8,8 @@ from db import (
         create_workout,
         update_workout,
         delete_workout,
-        save_session_stats,
         save_pressure_data,
-        sessions_collection,
+        workouts_collection,
     )
 
 # Support running both as a package (python -m backend.app)
@@ -66,30 +65,6 @@ def create_app() -> Flask:
             workout = get_workout_by_id(workout_id)
             if not workout:
                 return jsonify({"error": "Workout not found"}), 404
-
-            # Attach pressure frames if sessions collection is available
-            try:
-                if sessions_collection is not None:
-                    pressure_frames = list(
-                        sessions_collection.find({"workout_id": workout_id}).sort("timestamp", 1)
-                    )
-                    def serialize_frame(frame):
-                        ts = frame.get("timestamp")
-                        # Ensure timestamp is JSON-serializable
-                        if hasattr(ts, "isoformat"):
-                            ts = ts.isoformat()
-                        return {
-                            "matrix": frame.get("pressure_matrix", []),
-                            "stats": frame.get("calculated_stats", {}),
-                            "timestamp": ts,
-                            "nodes": frame.get("nodes", []),
-                        }
-
-                    workout["pressure_frames"] = [serialize_frame(f) for f in pressure_frames]
-            except Exception:
-                # Non-fatal; continue without frames
-                pass
-
             return jsonify({"status": "success", "data": workout}), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -329,23 +304,26 @@ def create_app() -> Flask:
     # ==================== MongoDB Change Stream (broadcast) ====================
     def watch_sessions():
         from db import mongodb_available
-        if not mongodb_available or sessions_collection is None:
+        if not mongodb_available:
             print('Change stream unavailable: MongoDB not available')
             return
         try:
-            with sessions_collection.watch([{ '$match': { 'operationType': 'insert' } }]) as stream:
-                print('Started MongoDB change stream for sessions')
+            with workouts_collection.watch(
+                [{ '$match': { 'operationType': 'update' } }],
+                full_document='updateLookup'
+            ) as stream:
+                print('Started MongoDB change stream for workouts')
                 for change in stream:
-                    full_doc = change.get('fullDocument', {})
-                    workout_id = full_doc.get('workout_id')
-                    stats = full_doc.get('calculated_stats')
-                    ts = full_doc.get('timestamp')
-                    if workout_id and stats:
-                        # Emit stats_update to the workout room
+                    full_doc = change.get('fullDocument', {}) or {}
+                    workout_id = full_doc.get('_id')
+                    frames = full_doc.get('pressure_frames') or []
+                    last_frame = frames[-1] if frames else None
+                    if workout_id and last_frame:
+                        ts = last_frame.get('timestamp')
                         socketio.emit('stats_update', {
-                            'stats': stats,
-                            'timestamp': getattr(ts, 'isoformat', lambda: ts)() if ts else None
-                        }, room=workout_id)
+                            'stats': last_frame.get('calculated_stats'),
+                            'timestamp': getattr(ts, 'isoformat', lambda: ts)() if ts else ts
+                        }, room=str(workout_id))
         except Exception as e:
             print(f'Change stream error: {e}')
 
