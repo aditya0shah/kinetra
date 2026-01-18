@@ -39,6 +39,7 @@ DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUI
 
 NUM_ROWS = 13
 NUM_COLS = 9
+PAYLOAD_LEN = 4 + NUM_ROWS * NUM_COLS * 2
 MAX_CLIP = 5000.0
 EPISODE_DURATION = 5.0  # seconds
 SAMPLING_RATE = 1.6  # Hz (matrices per second)
