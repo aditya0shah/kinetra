@@ -20,8 +20,9 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import numpy as np
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load .env from backend directory (same as agent.py)
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_backend_dir, ".env"))
 
 # LiveKit imports for token generation
 try:
@@ -217,6 +218,39 @@ def create_app() -> Flask:
                 "message": error_message,
                 "hint": "Check that your LIVEKIT_API_KEY and LIVEKIT_API_SECRET are correct"
             }), 500
+
+    @app.post("/api/livekit/connection")
+    def livekit_connection():
+        """Return { serverUrl, participantToken } for the frontend. Dispatches agent_name (local agent.py start)."""
+        if not api:
+            return jsonify({"error": "LiveKit SDK not installed", "hint": "Run: pip install livekit-api"}), 503
+        try:
+            livekit_url = os.getenv("LIVEKIT_URL")
+            livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+            livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+            if not all((livekit_url, livekit_api_key, livekit_api_secret)):
+                return jsonify({"error": "LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET required in .env"}), 503
+            body = request.get_json(silent=True) or {}
+            room_name = body.get("roomName") or f"kinetra-{int(time.time())}"
+            participant_name = body.get("participantName") or f"user-{os.urandom(4).hex()}"
+            raw = body.get("workoutId")
+            workout_id = str(raw).strip() if raw is not None and str(raw).strip() else None
+            metadata = json.dumps({"workout_id": workout_id}) if workout_id else "{}"
+            agent_name = body.get("agentName") or os.getenv("LIVEKIT_AGENT_NAME", "Jordan-d13")
+            room_config = api.RoomConfiguration(
+                agents=[api.RoomAgentDispatch(agent_name=agent_name, metadata=metadata)]
+            )
+            token = (
+                api.AccessToken(livekit_api_key, livekit_api_secret)
+                .with_identity(participant_name)
+                .with_name(participant_name)
+                .with_grants(api.VideoGrants(room_join=True, room=room_name, can_publish=True, can_subscribe=True))
+                .with_room_config(room_config)
+                .to_jwt()
+            )
+            return jsonify({"serverUrl": livekit_url, "participantToken": token}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     @app.get("/workouts")
     def get_workouts():

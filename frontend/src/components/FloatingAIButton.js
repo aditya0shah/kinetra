@@ -1,21 +1,21 @@
 import React, { useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { FiMic, FiX } from 'react-icons/fi';
+import { TokenSource } from 'livekit-client';
 import { LiveKitRoom, RoomAudioRenderer, useVoiceAssistant } from '@livekit/components-react';
 import '@livekit/components-styles';
-
-const SANDBOX_ID = 'kinetra-10sdo0';
-const SANDBOX_API = 'https://cloud-api.livekit.io/api/sandbox/connection-details';
+import CONFIG from '../config';
 
 const FloatingAIButton = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const location = useLocation();
   
-  // Extract workout ID from URL if on episode page
-  const workoutId = location.pathname.includes('/episode/') 
-    ? location.pathname.split('/episode/')[1] 
-    : null;
+  // Extract workout ID from URL if on episode page (/episode/:id)
+  const workoutId = (() => {
+    const m = location.pathname.match(/\/episode\/([^/?]+)/);
+    return m ? m[1] : null;
+  })();
 
   return (
     <>
@@ -65,30 +65,37 @@ function AICoachModal({ onClose, workoutId }) {
     setError(null);
 
     try {
-      const response = await fetch(SANDBOX_API, {
-        method: 'POST',
-        headers: {
-          'X-Sandbox-ID': SANDBOX_ID,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          room_name: `kinetra-session-${workoutId ? 'workout-' + workoutId + '-' : ''}${Date.now()}`,
-          participant_name: `user-${Math.random().toString(36).substring(7)}`,
-          room_config: {
-            agent_dispatch: {
-              agent_name: 'voice-assistant',
-            },
-          },
-        }),
-      });
+      const roomName = `kinetra-session-${workoutId ? 'workout-' + workoutId + '-' : ''}${Date.now()}`;
+      const participantName = `user-${Math.random().toString(36).substring(7)}`;
 
-      if (!response.ok) {
-        throw new Error(`Failed to connect: ${response.status}`);
+      if (CONFIG.LIVEKIT_USE_BACKEND) {
+        const res = await fetch(`${CONFIG.BASE_URL}${CONFIG.ENDPOINTS.LIVEKIT_CONNECTION}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            roomName,
+            participantName,
+            workoutId: workoutId || undefined,
+            agentName: CONFIG.AGENT_NAME,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || `Request failed: ${res.status}`);
+        }
+        const d = await res.json();
+        setConnectionDetails({ serverUrl: d.serverUrl, participantToken: d.participantToken });
+      } else {
+        const sandboxOpts = CONFIG.LIVEKIT_SANDBOX_BASE_URL ? { baseUrl: CONFIG.LIVEKIT_SANDBOX_BASE_URL } : {};
+        const tokenSource = TokenSource.sandboxTokenServer(CONFIG.LIVEKIT_SANDBOX_ID, sandboxOpts);
+        const { serverUrl, participantToken } = await tokenSource.fetch({
+          roomName,
+          participantName,
+          agentName: CONFIG.AGENT_NAME,
+          ...(workoutId && { agentMetadata: JSON.stringify({ workout_id: workoutId }) }),
+        });
+        setConnectionDetails({ serverUrl, participantToken });
       }
-
-      const details = await response.json();
-      console.log('✅ Connected to AI Coach:', details);
-      setConnectionDetails(details);
     } catch (err) {
       console.error('❌ Connection error:', err);
       setError(err.message);
@@ -164,8 +171,8 @@ function AICoachModal({ onClose, workoutId }) {
           <LiveKitRoom
             serverUrl={connectionDetails.serverUrl}
             token={connectionDetails.participantToken}
-            connect={true}
-            audio={true}
+            connect
+            audio
             video={false}
             onDisconnected={disconnect}
           >

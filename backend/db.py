@@ -1,9 +1,9 @@
 """
 MongoDB database connection and utilities
 """
+import logging
 import os
 from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
 from bson import ObjectId
 from datetime import datetime
@@ -11,7 +11,9 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-print("MONGODB_URI", os.getenv("MONGODB_URI"))
+_log = logging.getLogger("kinetra.db")
+logging.getLogger("pymongo").setLevel(logging.ERROR)
+logging.getLogger("pymongo.topology").setLevel(logging.ERROR)
 MONGODB_URI = os.getenv("MONGODB_URI")
 
 # Global variables
@@ -22,23 +24,16 @@ mongodb_available = False
 
 if MONGODB_URI:
     try:
-        # Initialize MongoDB client with longer timeout for network issues
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000, connectTimeoutMS=10000)
-
-        # Verify connection with explicit timeout
         client.admin.command('ping', maxTimeMS=5000)
-        print("✓ Connected to MongoDB successfully")
-
-        # Database and collections
         db = client['kinetra']
         workouts_collection = db['workouts']
         mongodb_available = True
-
     except Exception as e:
-        print(f"⚠ MongoDB connection failed: {e}")
+        _log.warning("MongoDB connection failed: %s", e)
         mongodb_available = False
 else:
-    print("⚠ MONGODB_URI not set - MongoDB unavailable")
+    _log.warning("MONGODB_URI not set - MongoDB unavailable")
 
 
 def serialize_doc(doc):
@@ -146,7 +141,7 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_s
         if smoothed_stats is not None:
             pressure_frame['smoothed_stats'] = smoothed_stats
 
-        print(f"🧾 Saving pressure data to MongoDB")
+        _log.debug("Saving pressure data to MongoDB")
 
         # Include nodes if provided
         if nodes is not None:
@@ -164,7 +159,7 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_s
         )
         return result.modified_count > 0
     except Exception as e:
-        print(f"Error saving pressure data: {e}")
+        _log.warning("Error saving pressure data: %s", e)
         raise e
 
 
