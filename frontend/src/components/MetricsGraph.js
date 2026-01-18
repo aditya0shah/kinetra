@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts';
 
 /**
  * MetricsGraph Component
@@ -58,6 +58,17 @@ const MetricsGraph = ({ timeSeriesStats, isDark, activeFrameIndex }) => {
     if (!timeSeriesStats || timeSeriesStats.length === 0 || !activeStat) return null;
     return timeSeriesStats[timeSeriesStats.length - 1];
   }, [timeSeriesStats, activeStat]);
+
+  const eventFrameIndexes = useMemo(() => {
+    if (!Array.isArray(timeSeriesStats)) return [];
+    const indexes = new Set();
+    timeSeriesStats.forEach((frame, idx) => {
+      if (Array.isArray(frame?.events) && frame.events.length > 0) {
+        indexes.add(idx);
+      }
+    });
+    return Array.from(indexes);
+  }, [timeSeriesStats]);
 
   const statLabels = {
     mean_force: 'Mean Force',
@@ -147,6 +158,16 @@ const MetricsGraph = ({ timeSeriesStats, isDark, activeFrameIndex }) => {
               labelStyle={{ color: isDark ? '#e2e8f0' : '#1f2937' }}
             />
             <Legend wrapperStyle={{ color: isDark ? '#e2e8f0' : '#1f2937' }} />
+
+            {eventFrameIndexes.map((index) => (
+              <ReferenceArea
+                key={`event-frame-${index}`}
+                x1={index - 1.5}
+                x2={index + 1.5}
+                fill="rgba(239, 68, 68, 0.15)"
+                strokeOpacity={0}
+              />
+            ))}
 
             {regionKeys.map((region, index) => (
               <Line
