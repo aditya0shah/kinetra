@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import './App.css';
+import { BluetoothProvider } from './context/BluetoothContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { WorkoutProvider } from './context/WorkoutContext';
 import Layout from './components/Layout';
@@ -13,14 +14,16 @@ function App() {
   return (
     <Router>
       <ThemeProvider>
-        <WorkoutProvider>
-          <Routes>
-            <Route path="/" element={<Layout><Dashboard /></Layout>} />
-            <Route path="/workouts" element={<Layout><Workouts /></Layout>} />
-            <Route path="/episode/:id" element={<EpisodeDetail />} />
-            <Route path="/analytics" element={<Layout><Analytics /></Layout>} />
-          </Routes>
-        </WorkoutProvider>
+        <BluetoothProvider>
+          <WorkoutProvider>
+            <Routes>
+              <Route path="/" element={<Layout><Dashboard /></Layout>} />
+              <Route path="/workouts" element={<Layout><Workouts /></Layout>} />
+              <Route path="/episode/:id" element={<EpisodeDetail />} />
+              <Route path="/analytics" element={<Layout><Analytics /></Layout>} />
+            </Routes>
+          </WorkoutProvider>
+        </BluetoothProvider>
       </ThemeProvider>
     </Router>
   );

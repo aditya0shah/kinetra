@@ -1,15 +1,14 @@
-import React, { useContext } from 'react';
+import React from 'react';
 import { FiClock, FiZap, FiHeart, FiPlay, FiTrash2 } from 'react-icons/fi';
-import { WorkoutContext } from '../context/WorkoutContext';
+import { deleteWorkout } from '../services/api';
 
 const WorkoutEpisodesList = ({ workouts, selectedWorkout, onSelectWorkout, isDark }) => {
-  const { deleteWorkout } = useContext(WorkoutContext);
-
   const handleDelete = async (e, workoutId) => {
     e.stopPropagation();
     if (window.confirm('Are you sure you want to delete this workout?')) {
       try {
         await deleteWorkout(workoutId);
+        // Note: Parent component (Workouts.js) should refetch the list or update state
       } catch (err) {
         console.error('Failed to delete workout:', err);
         alert('Failed to delete workout');

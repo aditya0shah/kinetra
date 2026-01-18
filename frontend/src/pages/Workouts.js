@@ -1,20 +1,36 @@
-import React, { useContext } from 'react';
+import React, { useContext, useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
 import { FiArrowRight, FiCalendar, FiClock, FiZap, FiHeart, FiTrash2 } from 'react-icons/fi';
 import Header from '../components/Header';
+import { getWorkouts, deleteWorkout as apiDeleteWorkout } from '../services/api';
 
 const Workouts = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
-  const { workouts, deleteWorkout } = useContext(WorkoutContext);
+  const { isWorkoutInProgress } = useContext(WorkoutContext);
+  const [workouts, setWorkouts] = useState([]);
+
+  useEffect(() => {
+    const fetchWorkouts = async () => {
+      try {
+        const data = await getWorkouts();
+        setWorkouts(data || []);
+      } catch (e) {
+        console.warn('Failed to fetch workouts:', e.message);
+        setWorkouts([]);
+      }
+    };
+    fetchWorkouts();
+  }, []);
 
   const handleDelete = async (e, workoutId) => {
     e.preventDefault();
     e.stopPropagation();
     if (window.confirm('Are you sure you want to delete this workout?')) {
       try {
-        await deleteWorkout(workoutId);
+        await apiDeleteWorkout(workoutId);
+        setWorkouts(workouts.filter(w => w._id !== workoutId && w.id !== workoutId));
       } catch (err) {
         console.error('Failed to delete workout:', err);
         alert('Failed to delete workout');
@@ -130,11 +146,19 @@ const Workouts = () => {
                     </div>
                   </div>
                   <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    isDark
-                      ? 'bg-green-900 text-green-300'
-                      : 'bg-green-100 text-green-800'
+                    isWorkoutInProgress(workout._id || workout.id)
+                      ? isDark
+                        ? 'bg-blue-900 text-blue-300'
+                        : 'bg-blue-100 text-blue-800'
+                      : workout.status === 'completed'
+                      ? isDark
+                        ? 'bg-green-900 text-green-300'
+                        : 'bg-green-100 text-green-800'
+                      : isDark
+                      ? 'bg-gray-700 text-gray-300'
+                      : 'bg-gray-200 text-gray-800'
                   }`}>
-                    Completed
+                    {isWorkoutInProgress(workout._id || workout.id) ? '🔴 In Progress' : workout.status === 'completed' ? 'Completed' : 'Paused'}
                   </div>
                 </div>
               </div>
