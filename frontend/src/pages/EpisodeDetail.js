@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState, useRef } from 'react';
+import React, { useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
@@ -10,7 +10,7 @@ import TimeSeriesChart from '../components/TimeSeriesChart';
 import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
 import { decodeFrameU16 } from '../services/ble';
-import { sendstat, getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
+import { getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
 import CONFIG from '../config';
 import { 
   connectWebSocket, 
@@ -32,7 +32,7 @@ const EpisodeDetail = () => {
   const navigate = useNavigate();
   const [workoutDetail, setWorkoutDetail] = useState(null);
   const [pressureData, setPressureData] = useState([]);
-  const [gridDims, setGridDims] = useState({ rows: 4, cols: 4 });
+  const [, setGridDims] = useState({ rows: 4, cols: 4 });
   const [statsData, setStatsData] = useState(null);
   const [timeSeriesStats, setTimeSeriesStats] = useState([]); // Accumulate time-series stats for graphing
   const [pressureMatrixData, setPressureMatrixData] = useState([]); // Accumulate raw pressure matrix data to save to DB
@@ -41,6 +41,14 @@ const EpisodeDetail = () => {
   const [canStart, setCanStart] = useState(true);
   const isStreamActiveRef = useRef(false); // track live streaming lifecycle
   const frameProcessedHandlerRef = useRef(null); // stable WS listener for cleanup
+  const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(false); // ref for immediate access in callbacks
+  
+  // Replay state for completed workouts
+  const [isReplaying, setIsReplaying] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
+  const replayIntervalRef = useRef(null);
 
   const workout = workoutDetail;
 
@@ -58,6 +66,27 @@ const EpisodeDetail = () => {
     if (id) fetchDetail();
     return () => { mounted = false; };
   }, [id]);
+
+  // Pause workout on component unmount or page navigation (don't complete it)
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (isStreamActiveRef.current && !isPausedRef.current && workout && workout.status === 'in-progress') {
+        // Pause the workout instead of completing it
+        handlePauseWorkout(true);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // Pause (not complete) on unmount if still in progress
+      if (isStreamActiveRef.current && !isPausedRef.current && workout && workout.status === 'in-progress') {
+        console.log('⚠️ Component unmounting, pausing workout...');
+        handlePauseWorkout(true);
+      }
+    };
+  }, [workout, handlePauseWorkout]);
 
   // Start/manage BLE device stream and WebSocket connection
   useEffect(() => {
@@ -83,7 +112,7 @@ const EpisodeDetail = () => {
     const setupWebSocket = async () => {
       try {
         // Connect to WebSocket
-        const socket = connectWebSocket();
+        connectWebSocket();
         console.log('WebSocket connection initiated');
 
         // Join session
@@ -128,7 +157,7 @@ const EpisodeDetail = () => {
     setupWebSocket();
 
     const handleBlePayload = (payload) => {
-      if (!isStreamActiveRef.current) return;
+      if (!isStreamActiveRef.current || isPausedRef.current) return;
 
       try {
         const { matrix } = decodeFrameU16(payload, {
@@ -187,6 +216,128 @@ const EpisodeDetail = () => {
     };
   }, [workout, canStart, hasActiveWorkout, startWorkout, navigate, inProgressWorkoutId, isConnected, startBleStream]);
 
+  const handlePauseWorkout = useCallback(async (skipStateUpdate = false) => {
+    if (!workout) return;
+    const workoutId = workout._id || workout.id;
+    
+    console.log('⏸️ Pausing workout:', workoutId);
+    
+    // Stop the BLE stream
+    if (stopStreamRef.current) {
+      stopStreamRef.current();
+      stopStreamRef.current = null;
+      console.log('✅ BLE stream stopped');
+    }
+    
+    // Pause WebSocket listeners but keep connection
+    isPausedRef.current = true;
+    if (!skipStateUpdate) {
+      setIsPaused(true);
+    }
+    
+    // Leave session and disconnect WebSocket
+    if (frameProcessedHandlerRef.current) {
+      offFrameProcessed(frameProcessedHandlerRef.current);
+      offStatsUpdate(frameProcessedHandlerRef.current);
+      console.log('✅ WebSocket listeners removed');
+    }
+    leaveSession(workoutId);
+    disconnectWebSocket();
+    console.log('✅ WebSocket disconnected');
+    
+    // Update workout status to paused in MongoDB
+    try {
+      await apiUpdateWorkout(workoutId, { 
+        status: 'paused',
+        pausedAt: new Date().toISOString(),
+        // Save current progress
+        timeSeriesData: pressureMatrixData
+      });
+      console.log('✅ Workout paused in database');
+      
+      // Update local state
+      if (!skipStateUpdate) {
+        setWorkoutDetail(prev => ({ ...prev, status: 'paused' }));
+      }
+    } catch (e) {
+      console.error('Failed to pause workout:', e);
+    }
+  }, [workout, pressureMatrixData]);
+
+  const handleResumeWorkout = async () => {
+    if (!workout) return;
+    const workoutId = workout._id || workout.id;
+    
+    console.log('▶️ Resuming workout:', workoutId);
+    
+    // Update status to in-progress
+    try {
+      await apiUpdateWorkout(workoutId, { 
+        status: 'in-progress',
+        resumedAt: new Date().toISOString()
+      });
+      
+      // Update local state
+      setWorkoutDetail(prev => ({ ...prev, status: 'in-progress' }));
+      setIsPaused(false);
+      isPausedRef.current = false;
+      
+      // Reconnect WebSocket and resume stream
+      connectWebSocket();
+      await joinSession(workoutId);
+      
+      // Re-attach listeners
+      const handler = (data) => {
+        if (data && data.stats) {
+          setStatsData(data.stats);
+          setTimeSeriesStats(prev => [...prev, {
+            timestamp: data.timestamp || Date.now(),
+            ...data.stats
+          }]);
+        }
+      };
+      frameProcessedHandlerRef.current = handler;
+      onFrameProcessed(handler);
+      onStatsUpdate(handler);
+      
+      // Restart BLE stream
+      if (isConnected) {
+        const payloadLen = 4 + CONFIG.BLE.ROWS * CONFIG.BLE.COLS * 2;
+        const stop = await startBleStream({
+          payloadLen,
+          useSequence: CONFIG.BLE.USE_SEQUENCE,
+          onPayload: (payload) => {
+            if (!isStreamActiveRef.current || isPausedRef.current) return;
+            try {
+              const { matrix } = decodeFrameU16(payload, {
+                minV: CONFIG.BLE.MIN_V,
+                maxV: CONFIG.BLE.MAX_V,
+                rows: CONFIG.BLE.ROWS,
+                cols: CONFIG.BLE.COLS,
+              });
+              setGridDims({ rows: CONFIG.BLE.ROWS, cols: CONFIG.BLE.COLS });
+              setPressureData({ frames: [matrix] });
+              const timestamp = Date.now();
+              setPressureMatrixData(prev => [...prev, {
+                timestamp: timestamp,
+                matrix: matrix,
+              }]);
+              sendPressureFrame(workoutId, matrix, undefined, timestamp);
+            } catch (e) {
+              console.error('Failed to process BLE payload:', e);
+            }
+          },
+        });
+        stopStreamRef.current = stop;
+      }
+      
+      console.log('✅ Workout resumed');
+    } catch (e) {
+      console.error('Failed to resume workout:', e);
+      alert('Failed to resume workout. Please try again.');
+    }
+  };
+
   const handleCompleteWorkout = async () => {
     if (!workout) return;
     try {
@@ -227,6 +378,69 @@ const EpisodeDetail = () => {
       setIsCompleting(false);
     }
   };
+
+  // Replay handlers for completed workouts
+  const handleStartReplay = () => {
+    if (!workout?.timeSeriesData || workout.timeSeriesData.length === 0) {
+      alert('No replay data available');
+      return;
+    }
+    setIsReplaying(true);
+    setReplayIndex(0);
+    setIsReplayPlaying(true);
+  };
+
+  const handleStopReplay = () => {
+    setIsReplaying(false);
+    setIsReplayPlaying(false);
+    setReplayIndex(0);
+    if (replayIntervalRef.current) {
+      clearInterval(replayIntervalRef.current);
+      replayIntervalRef.current = null;
+    }
+  };
+
+  const handleReplayPlayPause = () => {
+    setIsReplayPlaying(!isReplayPlaying);
+  };
+
+  const handleReplaySeek = (index) => {
+    setReplayIndex(Math.max(0, Math.min(index, (workout?.timeSeriesData?.length || 1) - 1)));
+  };
+
+  // Replay playback effect
+  useEffect(() => {
+    if (!isReplaying || !isReplayPlaying || !workout?.timeSeriesData) return;
+
+    replayIntervalRef.current = setInterval(() => {
+      setReplayIndex(prev => {
+        const next = prev + 1;
+        if (next >= workout.timeSeriesData.length) {
+          setIsReplayPlaying(false);
+          return prev; // Stay at last frame
+        }
+        return next;
+      });
+    }, 250); // 4 FPS replay
+
+    return () => {
+      if (replayIntervalRef.current) {
+        clearInterval(replayIntervalRef.current);
+        replayIntervalRef.current = null;
+      }
+    };
+  }, [isReplaying, isReplayPlaying, workout?.timeSeriesData]);
+
+  // Update pressure data during replay
+  useEffect(() => {
+    if (isReplaying && workout?.timeSeriesData && workout.timeSeriesData[replayIndex]) {
+      const frame = workout.timeSeriesData[replayIndex];
+      if (frame.matrix) {
+        setPressureData({ frames: [frame.matrix] });
+        setGridDims({ rows: CONFIG.BLE.ROWS, cols: CONFIG.BLE.COLS });
+      }
+    }
+  }, [isReplaying, replayIndex, workout?.timeSeriesData]);
 
   const hasPressureData = Array.isArray(pressureData)
     ? pressureData.length > 0
@@ -274,15 +488,56 @@ const EpisodeDetail = () => {
 
           {/* Controls */}
           <div className="flex items-center gap-3">
-            {workout.status !== 'completed' && (
+            {workout.status === 'in-progress' && !isPaused && (
+              <>
+                <button
+                  onClick={handlePauseWorkout}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                    isDark ? 'bg-yellow-700 hover:bg-yellow-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                  }`}
+                >
+                  ⏸️ Pause Workout
+                </button>
+                <button
+                  onClick={handleCompleteWorkout}
+                  disabled={isCompleting}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                    isDark ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                  } ${isCompleting ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {isCompleting ? 'Completing…' : '✅ Complete Workout'}
+                </button>
+              </>
+            )}
+            {(workout.status === 'paused' || isPaused) && (
+              <>
+                <button
+                  onClick={handleResumeWorkout}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                    isDark ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                  }`}
+                >
+                  ▶️ Resume Workout
+                </button>
+                <button
+                  onClick={handleCompleteWorkout}
+                  disabled={isCompleting}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                    isDark ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
+                  } ${isCompleting ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {isCompleting ? 'Completing…' : '✅ Complete Workout'}
+                </button>
+              </>
+            )}
+            {workout.status === 'completed' && !isReplaying && workout?.timeSeriesData?.length > 0 && (
               <button
-                onClick={handleCompleteWorkout}
-                disabled={isCompleting}
+                onClick={handleStartReplay}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
-                  isDark ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'
-                } ${isCompleting ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  isDark ? 'bg-purple-700 hover:bg-purple-600 text-white' : 'bg-purple-500 hover:bg-purple-600 text-white'
+                }`}
               >
-                {isCompleting ? 'Completing…' : 'Complete Workout'}
+                🔄 Replay Workout
               </button>
             )}
           </div>
@@ -336,6 +591,57 @@ const EpisodeDetail = () => {
 
         {/* Main Visualizations */}
         <div className="space-y-8">
+          {/* Replay Controls */}
+          {isReplaying && (
+            <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                  🔄 Replay Mode
+                </h3>
+                <button
+                  onClick={handleStopReplay}
+                  className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
+                    isDark ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
+                  }`}
+                >
+                  Stop Replay
+                </button>
+              </div>
+              
+              {/* Playback Controls */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={handleReplayPlayPause}
+                    className={`px-4 py-2 rounded-lg font-semibold transition-all ${
+                      isDark ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
+                    }`}
+                  >
+                    {isReplayPlaying ? '⏸️ Pause' : '▶️ Play'}
+                  </button>
+                  <span className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Frame {replayIndex + 1} / {workout?.timeSeriesData?.length || 0}
+                  </span>
+                </div>
+                
+                {/* Scrubber */}
+                <div className="relative">
+                  <input
+                    type="range"
+                    min="0"
+                    max={(workout?.timeSeriesData?.length || 1) - 1}
+                    value={replayIndex}
+                    onChange={(e) => handleReplaySeek(parseInt(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
+                    style={{
+                      background: `linear-gradient(to right, ${isDark ? '#3b82f6' : '#2563eb'} 0%, ${isDark ? '#3b82f6' : '#2563eb'} ${((replayIndex) / ((workout?.timeSeriesData?.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} ${((replayIndex) / ((workout?.timeSeriesData?.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} 100%)`
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+          
           {/* Foot Pressure Heatmap */}
           <FootPressureHeatmap 
             footPressureData={displayPressureData} 

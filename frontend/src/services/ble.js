@@ -115,6 +115,7 @@ export const connectBleUart = async ({
   }
 
   const filters = [];
+  console.log('connectBleUart: name=', name);
   if (name) filters.push({ name });
 
   const device = await navigator.bluetooth.requestDevice({

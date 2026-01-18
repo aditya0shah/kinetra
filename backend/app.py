@@ -199,7 +199,26 @@ def create_app() -> Flask:
     
     @socketio.on('disconnect')
     def handle_disconnect():
-        print(f"Client disconnected: {request.sid}")
+        client_id = request.sid
+        print(f"🔴 Client disconnected: {client_id}")
+        
+        # Clean up all sessions for this client
+        sessions_to_remove = []
+        for workout_id, session in active_sessions.items():
+            if session.get('client_id') == client_id:
+                sessions_to_remove.append(workout_id)
+                frame_count = session.get('frame_count', 0)
+                print(f"🧹 Cleaning up session {workout_id} (client: {client_id}, frames: {frame_count})")
+                leave_room(workout_id)
+        
+        # Remove sessions after iteration
+        for workout_id in sessions_to_remove:
+            del active_sessions[workout_id]
+        
+        if sessions_to_remove:
+            print(f"✅ Cleaned up {len(sessions_to_remove)} session(s) for client {client_id}")
+        else:
+            print(f"ℹ️ No active sessions found for client {client_id}")
     
     @socketio.on('join_session')
     def on_join_session(data):
@@ -232,6 +251,12 @@ def create_app() -> Flask:
             if not workout_id or not matrix:
                 print(f"❌ Missing data - workout_id: {workout_id}, matrix: {matrix is not None}")
                 emit('error', {'message': 'Missing workout_id or matrix'})
+                return
+            
+            # Check if session is still active
+            if workout_id not in active_sessions or not active_sessions[workout_id].get('connected'):
+                print(f"⚠️ Ignoring frame for inactive session: {workout_id}")
+                emit('error', {'message': 'Session not active or already ended'})
                 return
             
             # Calculate stats from the matrix
@@ -308,14 +333,20 @@ def create_app() -> Flask:
     def on_leave_session(data):
         """Client leaves the session and data streaming ends"""
         workout_id = data.get('workout_id')
+        client_id = request.sid
         if workout_id:
+            print(f"👋 Client {client_id} leaving session {workout_id}")
             leave_room(workout_id)
             if workout_id in active_sessions:
                 active_sessions[workout_id]['connected'] = False
                 frame_count = active_sessions[workout_id]['frame_count']
-                print(f"Session {workout_id} ended. Total frames: {frame_count}")
+                print(f"✅ Session {workout_id} ended cleanly. Total frames: {frame_count}")
                 del active_sessions[workout_id]
+            else:
+                print(f"ℹ️ Session {workout_id} was already cleaned up")
             emit('session_ended', {'workout_id': workout_id})
+        else:
+            print(f"⚠️ Leave session called without workout_id by client {client_id}")
 
     # ==================== MongoDB Change Stream (broadcast) ====================
     def watch_sessions():
