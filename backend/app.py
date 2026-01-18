@@ -1,6 +1,7 @@
 import json
 import sys
 import os
+import time
 from stats import calculate_region_stats, split_into_regions, apply_ema_stats
 from db import (
         get_all_workouts,
@@ -40,6 +41,85 @@ def create_app() -> Flask:
     active_sessions = {}  # {workout_id: {'connected': bool, 'frame_count': int}}
     ema_state = {}  # {workout_id: smoothed_stats}
     EMA_ALPHA = 0.05
+    EVENT_DEFINITIONS = {
+        'region_force_high': {
+            'mode': 'per_region_stat',
+            'stat': 'mean_force',
+            'threshold': 50,
+            'comparison': 'gt',
+            'min_interval_seconds': 5,
+        },
+        'region_force_low': {
+            'mode': 'per_region_stat',
+            'stat': 'mean_force',
+            'threshold': 5,
+            'comparison': 'lt',
+            'min_interval_seconds': 5,
+        },
+    }
+
+    def _to_epoch_seconds(timestamp):
+        if isinstance(timestamp, (int, float)):
+            return float(timestamp) / 1000.0 if timestamp > 1e12 else float(timestamp)
+        return time.time()
+
+    def _detect_events(stats, timestamp=None):
+        if not isinstance(stats, dict):
+            return []
+        events = []
+        for event_type, definition in EVENT_DEFINITIONS.items():
+            mode = definition.get('mode')
+            if mode == 'per_region_stat':
+                stat_name = definition.get('stat')
+                threshold = definition.get('threshold')
+                comparison = definition.get('comparison', 'gt')
+                for region_name, region_stats in stats.items():
+                    if not isinstance(region_stats, dict):
+                        continue
+                    value = region_stats.get(stat_name)
+                    if not isinstance(value, (int, float)) or not isinstance(threshold, (int, float)):
+                        continue
+                    if comparison == 'lt':
+                        is_match = value <= threshold
+                    else:
+                        is_match = value >= threshold
+                    if is_match:
+                        events.append({
+                            'type': event_type,
+                            'region': region_name,
+                            'stat': stat_name,
+                            'value': float(value),
+                            'threshold': float(threshold),
+                            'comparison': comparison,
+                            'timestamp': timestamp,
+                        })
+        return events
+
+    def _get_events_for_save(workout_id, stats, timestamp=None, source='backend'):
+        if not workout_id or not isinstance(stats, dict):
+            return []
+        events = _detect_events(stats, timestamp=timestamp)
+        if not events:
+            return []
+
+        now_seconds = _to_epoch_seconds(timestamp)
+        session_state = active_sessions.get(workout_id, {})
+        last_event_times = session_state.setdefault('last_event_times', {})
+        filtered_events = []
+        for event in events:
+            event_type = event.get('type')
+            last_seen = last_event_times.get(event_type, 0)
+            definition = EVENT_DEFINITIONS.get(event_type, {})
+            min_interval = definition.get('min_interval_seconds', 0)
+            if now_seconds - last_seen < min_interval:
+                continue
+            event['source'] = source
+            last_event_times[event_type] = now_seconds
+            filtered_events.append(event)
+
+        if workout_id in active_sessions:
+            active_sessions[workout_id]['last_event_times'] = last_event_times
+        return filtered_events
 
     @app.after_request
     def add_cors_headers(response):
@@ -201,65 +281,6 @@ def create_app() -> Flask:
     def start_session():
         payload = request.get_json(silent=True) or {}
         return jsonify({"status": "ok", "received": payload})
-
-    @app.post("/stats")  # Calculate stats for one matrix frame
-    def matrix():
-        payload = request.get_json(silent=True)
-        if payload is None:
-            return jsonify({"error": "Missing JSON body"}), 400
-
-        parsed = payload.get("matrix")
-        if parsed is None:
-            return jsonify({"error": "Missing required field: matrix"}), 400
-
-        if not isinstance(parsed, list) or not all(
-            isinstance(row, list) for row in parsed
-        ):
-            return jsonify({"error": "matrix must be a 2D array"}), 400
-        
-        try:
-            # Convert matrix to numpy array for calculation
-            matrix_array = np.array(parsed, dtype=float)
-            
-            # Calculate stats using stats.py functions
-            regions = split_into_regions(matrix_array)
-            calculated_stats = calculate_region_stats(regions)
-            
-            # Save pressure data to database (required)
-            workout_id = payload.get("session_id")
-            if not workout_id:
-                return jsonify({"error": "Missing required field: session_id"}), 400
-
-            prev_ema = ema_state.get(workout_id)
-            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
-            if smoothed_stats:
-                ema_state[workout_id] = smoothed_stats
-
-            nodes = payload.get("nodes")
-            timestamp = payload.get("timestamp")
-            save_pressure_data(
-                workout_id,
-                parsed,
-                calculated_stats,
-                smoothed_stats=smoothed_stats,
-                nodes=nodes,
-                timestamp=timestamp
-            )
-            
-            # Return the calculated stats to frontend for visualization
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "matrix": parsed,
-                    "stats": smoothed_stats or calculated_stats,
-                    "raw_stats": calculated_stats
-                }
-            }), 200
-            
-        except Exception as e:
-            print(f"Error calculating stats: {e}")
-            return jsonify({"error": str(e)}), 500
-
     # ==================== WebSocket Events ====================
     
     @socketio.on('connect')
@@ -332,15 +353,22 @@ def create_app() -> Flask:
                     active_sessions[workout_id]['ema_stats'] = smoothed_stats
 
             # Save pressure data to MongoDB
+            events = _get_events_for_save(
+                workout_id,
+                calculated_stats,
+                timestamp=timestamp,
+                source='ws_pressure_frame'
+            )
             save_pressure_data(
                 workout_id, 
                 matrix, 
                 calculated_stats,
                 smoothed_stats=smoothed_stats,
                 nodes=nodes, 
-                timestamp=timestamp
+                timestamp=timestamp,
+                events=events
             )
-            
+
             # Update session metrics
             if workout_id in active_sessions:
                 active_sessions[workout_id]['frame_count'] += 1
@@ -377,13 +405,20 @@ def create_app() -> Flask:
                 if workout_id in active_sessions:
                     active_sessions[workout_id]['ema_stats'] = smoothed_stats
             # Persist a stats-only frame (matrix optional)
+            events = _get_events_for_save(
+                workout_id,
+                calculated_stats,
+                timestamp=timestamp,
+                source='ws_stats_frame'
+            )
             save_pressure_data(
                 workout_id,
                 matrix if matrix is not None else [],
                 calculated_stats,
                 smoothed_stats=smoothed_stats,
                 nodes=nodes,
-                timestamp=timestamp
+                timestamp=timestamp,
+                events=events
             )
             # Broadcast to session room
             emit('stats_update', {

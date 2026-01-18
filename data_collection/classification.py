@@ -34,8 +34,8 @@ UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> cent
 # === Configuration ===
 DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUID scan if not found)
 
-NUM_ROWS = 12
-NUM_COLS = 8
+NUM_ROWS = 13
+NUM_COLS = 9
 MAX_CLIP = 3700.0
 EPISODE_DURATION = 5.0  # seconds
 SAMPLING_RATE = 3.0  # Hz (matrices per second)

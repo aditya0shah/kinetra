@@ -11,8 +11,8 @@ def decode_payload(
     payload: Union[bytes, bytearray, memoryview],
     min_v: float,
     max_v: float,
-    rows: int = 12,
-    cols: int = 8,
+    rows: int = 13,
+    cols: int = 9,
     as_list: bool = True,
 ) -> Union[List[List[float]], np.ndarray]:
     if len(payload) % 2 != 0:
@@ -33,7 +33,7 @@ def decode_payload(
 
     return values
 
-def decode_frame_u16(payload: bytes, min_v: float, max_v: float, rows=12, cols=8):
+def decode_frame_u16(payload: bytes, min_v: float, max_v: float, rows=13, cols=9):
     k_magic = 0xBEEF
     expected = 4 + rows * cols * 2
     if len(payload) != expected:

@@ -120,7 +120,7 @@ def delete_workout(workout_id):
         return False
 
 
-def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_stats=None, nodes=None, timestamp=None):
+def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_stats=None, nodes=None, timestamp=None, events=None):
     """Save pressure data and calculated stats for a workout.
 
     Args:
@@ -151,6 +151,8 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_s
         # Include nodes if provided
         if nodes is not None:
             pressure_frame['nodes'] = nodes
+        if events:
+            pressure_frame['events'] = events
 
         # Append frame to the workout document
         result = workouts_collection.update_one(
@@ -164,3 +166,5 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, smoothed_s
     except Exception as e:
         print(f"Error saving pressure data: {e}")
         raise e
+
+

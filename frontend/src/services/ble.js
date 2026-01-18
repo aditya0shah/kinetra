@@ -200,7 +200,7 @@ export const decodePayloadU16 = (payload, { minV, maxV }) => {
 
 export const decodeFrameU16 = (
   payload,
-  { minV, maxV, rows = 12, cols = 8 }
+  { minV, maxV, rows = 13, cols = 9 }
 ) => {
   const bytes = toUint8Array(payload);
   const expected = 4 + rows * cols * 2;
@@ -224,8 +224,8 @@ export const decodeFrameU16 = (
 
 
 export const rescaleMatrix = (matrix) => {
-  const inMin = 700;
-  const inMax = 3700;
+  const inMin = 1000;
+  const inMax = 5000;
   const outMin = 0;
   const outMax = 100;
   const inRange = inMax - inMin;

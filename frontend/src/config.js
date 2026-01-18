@@ -14,8 +14,8 @@ const CONFIG = {
   },
   BLE: {
     DEVICE_NAME: process.env.REACT_APP_BLE_DEVICE_NAME || 'BLE_Test',
-    ROWS: Number(process.env.REACT_APP_BLE_ROWS || 12),
-    COLS: Number(process.env.REACT_APP_BLE_COLS || 8),
+    ROWS: Number(process.env.REACT_APP_BLE_ROWS || 13),
+    COLS: Number(process.env.REACT_APP_BLE_COLS || 9),
     MIN_V: Number(process.env.REACT_APP_BLE_MIN || -1),
     MAX_V: Number(process.env.REACT_APP_BLE_MAX || 3700),
     USE_SEQUENCE: process.env.REACT_APP_BLE_USE_SEQUENCE === 'true',
