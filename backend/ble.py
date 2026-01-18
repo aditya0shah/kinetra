@@ -131,7 +131,7 @@ def _print_matrix(matrix) -> None:
         print(", ".join(f"{v:.1f}" for v in row))
 
 
-def _show_heatmap(matrix, rows: int = 12, cols: int = 8) -> None:
+def _show_heatmap(matrix, rows: int = 13, cols: int = 9) -> None:
     import matplotlib
     import numpy as np
 
@@ -200,8 +200,8 @@ def _parse_args():
 
     parser = argparse.ArgumentParser(description="BLE UART test receiver")
     parser.add_argument("--name", required=True, help="BLE device name")
-    parser.add_argument("--rows", type=int, default=12, help="matrix rows")
-    parser.add_argument("--cols", type=int, default=8, help="matrix cols")
+    parser.add_argument("--rows", type=int, default=13, help="matrix rows")
+    parser.add_argument("--cols", type=int, default=9, help="matrix cols")
     parser.add_argument(
         "--min", dest="min_v", type=float, default=100.0, help="min range"
     )
@@ -254,7 +254,7 @@ async def _main():
     try:
         while True:
             payload = await queue.get()
-            frame_id, matrix = decode_frame_u16(payload, min_v=-1.0, max_v=3700.0, rows=12, cols=8)
+            frame_id, matrix = decode_frame_u16(payload, min_v=-1.0, max_v=3700.0, rows=13, cols=9)
             print("frame_id:", frame_id)
 
 

@@ -13,6 +13,12 @@ const int selectors = 4;
 const int muxOut = A0;
 const int RowPins[numRows] = {2, 0, 1, 24, 25, 26, 19, 18, 17, 16, 15, 9};
 const int selectorPins[selectors] = {22, 23, 5, 6};
+const int OMMITTED_NODES[][2] = {
+  {0, 0}, {0, 1}, {0, 7}, {1, 0},
+  {6, 7}, {7, 7},
+  {8, 6}, {8, 7}, {9, 6}, {9, 7}, {10, 6}, {10, 7}, {11, 6}, {11, 7}
+};
+const int kOmittedNodeCount = sizeof(OMMITTED_NODES) / sizeof(OMMITTED_NODES[0]);
 
 // ===== Constants =====
 const float V_SUPPLY = 3.3;
@@ -20,7 +26,7 @@ const float R_REF    = 330.0;
 const int   ADC_MAX  = 4095;
 
 // TODO: CONFIGURE LATER
-const float MAX_RESISTANCE = 3700.0;
+const float MAX_RESISTANCE = 6000.0;
 const float MIN_RESISTANCE = -1.0;
 
 // ===== Storage =====
@@ -35,6 +41,17 @@ const uint16_t kMagic = 0xBEEF;
 const int kHeaderBytes = 4; // magic (2) + frame_id (2)
 const int kPayloadBytes = kHeaderBytes + kSampleCount * 2;
 uint8_t payload[kPayloadBytes];
+
+// ===== Calibration (Python parity) =====
+// Match the Python logic: use the first N frames to build a resting average,
+// skipping values >= MAX_RESISTANCE, then scale so resting maps to MAX_RESISTANCE.
+const int kRestingHistorySize = 100;
+int frameCount = 0;
+bool restingFrozen = false;
+float restingSum[numRows][numCols];
+uint16_t restingCount[numRows][numCols];
+float restingState[numRows][numCols];
+float nodeMultiplier[numRows][numCols];
 
 // ---- Quantize / dequantize ----
 static inline uint16_t quantize_u16(float x, float minV, float maxV) {
@@ -64,27 +81,15 @@ static inline void pack_u16_le(uint16_t q, uint8_t* out) {
   out[1] = (uint8_t)(q >> 8);
 }
 
-// void packMatrixToPayload(float minV, float maxV) {
-//   int idx = 0;
-//   for (int r = 0; r < numRows; r++) {
-//     Serial.print("Row ");
-//     Serial.print(r);
-//     Serial.print(": ");
+static inline bool isOmittedNode(int r, int c) {
+  for (int i = 0; i < kOmittedNodeCount; i++) {
+    if (OMMITTED_NODES[i][0] == r && OMMITTED_NODES[i][1] == c) {
+      return true;
+    }
+  }
+  return false;
+}
 
-//     for (int c = 0; c < numCols; c++) {
-//       if (nodeResistance[r][c] > 3700) {
-//         nodeResistance[r][c] = 3700;
-//       }
-//       Serial.print(nodeResistance[r][c], 3);
-//       Serial.print(", ");
-//       uint16_t q = quantize_u16(nodeResistance[r][c], minV, maxV);
-//       pack_u16_le(q, &payload[idx * 2]);
-//       idx++;
-//     }
-
-//     Serial.println();
-//   }
-// }
 
 void packMatrixToPayload(float minV, float maxV, uint16_t frame_id) {
   // header
@@ -202,10 +207,49 @@ void scanMatrix() {
       if (v > 0.05f && v < (V_SUPPLY - 0.05f)) {
         nodeResistance[r][c] = R_REF * ((V_SUPPLY / v) - 1.0f);
       } else {
-        nodeResistance[r][c] = -1.0f; // Open circuit or saturated
+        nodeResistance[r][c] = MAX_RESISTANCE; // Open circuit or saturated
       }
     }
     digitalWrite(RowPins[r], LOW); // Deactivate row
+  }
+
+  // Force omitted nodes to -1 (no data)
+  for (int i = 0; i < kOmittedNodeCount; i++) {
+    const int r = OMMITTED_NODES[i][0];
+    const int c = OMMITTED_NODES[i][1];
+    if (r >= 0 && r < numRows && c >= 0 && c < numCols) {
+      nodeResistance[r][c] = -1.0f;
+    }
+  }
+}
+
+void applyMultipliersAndClip() {
+  if (!restingFrozen) return;
+
+  for (int r = 0; r < numRows; r++) {
+    for (int c = 0; c < numCols; c++) {
+      if (isOmittedNode(r, c)) {
+        nodeResistance[r][c] = -1.0f;
+        continue;
+      }
+
+      float v = nodeResistance[r][c];
+
+      // Mirror Python: treat non-positive as MAX_RESISTANCE sentinel.
+      if (v <= 0.0f) {
+        v = MAX_RESISTANCE;
+      }
+
+      // Clip before scaling.
+      if (v > MAX_RESISTANCE) v = MAX_RESISTANCE;
+
+      // Scale so resting average maps to MAX_RESISTANCE.
+      v *= nodeMultiplier[r][c];
+      if (v > MAX_RESISTANCE) v = MAX_RESISTANCE;
+      if (v < MIN_RESISTANCE) v = MIN_RESISTANCE;
+
+      nodeResistance[r][c] = v;
+    }
   }
 }
 
@@ -228,6 +272,11 @@ void transmitBlePacked() {
 
 void setup() {
   Serial.begin(115200);
+  uint32_t serialStart = millis();
+  while (!Serial && (millis() - serialStart) < 2000) {
+    delay(10);
+  }
+  Serial.println("Serial ready");
 
   // Configure Rows
   for (int r = 0; r < numRows; r++) {
@@ -243,6 +292,16 @@ void setup() {
 
   pinMode(muxOut, INPUT);
   analogReadResolution(12);
+
+  // Initialize calibration storage
+  for (int r = 0; r < numRows; r++) {
+    for (int c = 0; c < numCols; c++) {
+      restingSum[r][c] = 0.0f;
+      restingCount[r][c] = 0;
+      restingState[r][c] = MAX_RESISTANCE;
+      nodeMultiplier[r][c] = 1.0f;
+    }
+  }
 
   // BLE Setup
   // Bluefruit.configPrphBandwidth(BANDWIDTH_MAX); // Essential for high speed
@@ -270,11 +329,59 @@ void loop() {
   static uint32_t lastLogMs = 0;
   static uint32_t loopCount = 0;
 
-  // 1. Matrix Scan
+  // 1. Matrix Scan (always keep fresh data)
   scanMatrix();
 
-  // 2. BLE Transmission (packed + chunked)
-  transmitBlePacked();
+  // 1a. Calibration: build resting averages for first N frames
+  if (!restingFrozen) {
+    for (int r = 0; r < numRows; r++) {
+      for (int c = 0; c < numCols; c++) {
+        if (isOmittedNode(r, c)) continue;
+        float v = nodeResistance[r][c];
+
+        if (v <= 0.0f) v = MAX_RESISTANCE;
+        if (v > MAX_RESISTANCE) v = MAX_RESISTANCE;
+
+        // Only accumulate "valid" values (Python: res < MAX_CLIP)
+        if (v < MAX_RESISTANCE) {
+          restingSum[r][c] += v;
+          restingCount[r][c] += 1;
+        }
+      }
+    }
+
+    frameCount++;
+    if (frameCount >= kRestingHistorySize) {
+      for (int r = 0; r < numRows; r++) {
+        for (int c = 0; c < numCols; c++) {
+          if (isOmittedNode(r, c)) {
+            nodeMultiplier[r][c] = 1.0f;
+            restingState[r][c] = MAX_RESISTANCE;
+            continue;
+          }
+
+          if (restingCount[r][c] > 0) {
+            restingState[r][c] = restingSum[r][c] / (float)restingCount[r][c];
+          } else {
+            float v = nodeResistance[r][c];
+            if (v <= 0.0f) v = MAX_RESISTANCE;
+            if (v > MAX_RESISTANCE) v = MAX_RESISTANCE;
+            restingState[r][c] = v;
+          }
+
+          if (restingState[r][c] > 0.0f) {
+            nodeMultiplier[r][c] = MAX_RESISTANCE / restingState[r][c];
+          } else {
+            nodeMultiplier[r][c] = 1.0f;
+          }
+        }
+      }
+      restingFrozen = true;
+    }
+  } else {
+    applyMultipliersAndClip();
+    transmitBlePacked();
+  }
 
   loopCount++;
   uint32_t nowMs = millis();

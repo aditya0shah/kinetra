@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiPlay, FiPause, FiSkipBack, FiSkipForward } from 'react-icons/fi';
+import { FiSkipBack, FiSkipForward } from 'react-icons/fi';
 
 /**
  * WorkoutReplay Component
@@ -8,7 +8,6 @@ import { FiPlay, FiPause, FiSkipBack, FiSkipForward } from 'react-icons/fi';
 const WorkoutReplay = ({ workoutId, isDark }) => {
   const [frames, setFrames] = useState([]);
   const [currentFrame, setCurrentFrame] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -42,14 +41,14 @@ const WorkoutReplay = ({ workoutId, isDark }) => {
 
   // Auto-play frames
   useEffect(() => {
-    if (!isPlaying || frames.length === 0) return;
+    if (frames.length === 0) return;
 
     const interval = setInterval(() => {
       setCurrentFrame(prev => (prev + 1) % frames.length);
     }, 100); // Play at ~10 fps
 
     return () => clearInterval(interval);
-  }, [isPlaying, frames.length]);
+  }, [frames.length]);
 
   if (loading) {
     return (
@@ -138,16 +137,6 @@ const WorkoutReplay = ({ workoutId, isDark }) => {
           title="Previous frame"
         >
           <FiSkipBack size={20} />
-        </button>
-
-        <button
-          onClick={() => setIsPlaying(!isPlaying)}
-          className={`p-3 rounded-lg transition-colors ${
-            isDark ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-          }`}
-          title={isPlaying ? 'Pause' : 'Play'}
-        >
-          {isPlaying ? <FiPause size={20} /> : <FiPlay size={20} />}
         </button>
 
         <button

@@ -1,16 +1,16 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import usePressureGrid from '../hooks/usePressureGrid';
 
 const FootPressureHeatmap = ({
   footPressureData,
   isDark,
-  isPaused,
-  onPauseToggle,
   gridRows = 4,
   gridCols = 4,
 }) => {
   const canvasRef = useRef(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
+  const [showNumbers, setShowNumbers] = useState(false);
+  const minPressureValue = 0;
+  const maxPressureValue = 100;
 
   const resolvedData = Array.isArray(footPressureData)
     ? footPressureData
@@ -19,21 +19,63 @@ const FootPressureHeatmap = ({
     : [];
 
   const getPressureColor = (pressure) => {
-    const p = Math.min(Math.max(pressure, 0), 100);
-    if (p < 25) return '#10b981'; // Green
-    if (p < 50) return '#3b82f6'; // Blue
-    if (p < 75) return '#f59e0b'; // Amber
-    return '#ef4444'; // Red
+    const clamped = Math.min(Math.max(pressure, minPressureValue), maxPressureValue);
+    const normalized = clamped / maxPressureValue; // 0..1 (higher is more pressure)
+    // Map 0..1 to green->red gradient (low->high pressure)
+    const hue = 120 * (1 - normalized); // 120=green, 0=red
+    return `hsl(${hue}, 85%, 50%)`;
+  };
+
+  const applyGaussianKernel = (inputGrid) => {
+    if (!Array.isArray(inputGrid) || inputGrid.length === 0) return inputGrid;
+    const rows = inputGrid.length;
+    const cols = inputGrid[0]?.length || 0;
+    if (!cols) return inputGrid;
+
+    const kernel = [
+      [0.5, 1, 0.5],
+      [1, 2, 1],
+      [0.5, 1, 0.5],
+    ];
+
+    const output = inputGrid.map((row) => row.slice());
+
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const center = inputGrid[r][c];
+        if (center === -1) {
+          output[r][c] = -1;
+          continue;
+        }
+        let sum = 0;
+        let weightSum = 0;
+        for (let kr = -1; kr <= 1; kr += 1) {
+          for (let kc = -1; kc <= 1; kc += 1) {
+            const rr = r + kr;
+            const cc = c + kc;
+            if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) continue;
+            const value = inputGrid[rr][cc];
+            if (value === -1) continue;
+            const weight = kernel[kr + 1][kc + 1];
+            sum += value * weight;
+            weightSum += weight;
+          }
+        }
+        output[r][c] = weightSum > 0 ? sum / weightSum : center;
+      }
+    }
+    return output;
   };
 
   const { grid, dims } = usePressureGrid(resolvedData, 0, { gridCols, gridRows });
+  const smoothedGrid = useMemo(() => applyGaussianKernel(grid), [grid]);
 
   const draw = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const width = canvas.offsetWidth;
-    const height = 360;
+    const height = 520;
     canvas.width = width;
     canvas.height = height;
 
@@ -53,37 +95,50 @@ const FootPressureHeatmap = ({
     const cellW = cols ? gridW / cols : 0;
     const cellH = rows ? gridH / rows : 0;
 
-    // Draw grid cells
+    // Draw grid cells to offscreen canvas, then blur for smooth transitions
+    const offscreen = document.createElement('canvas');
+    offscreen.width = width;
+    offscreen.height = height;
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        const value = grid[r][c] ?? -1;
+        const value = smoothedGrid[r]?.[c] ?? -1;
         const x = gridX + c * cellW;
         const y = gridY + r * cellH;
 
         // Skip cells marked -1 (no sensor) → shapes the foot
         if (value === -1) {
-          // Draw subtle empty cell border for clarity
-          ctx.strokeStyle = isDark ? '#1f2937' : '#e5e7eb';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, cellW, cellH);
           continue;
         }
 
         const color = getPressureColor(value);
-        ctx.fillStyle = color;
-        ctx.globalAlpha = Math.min(0.85, 0.35 + (value / 100) * 0.5);
-        ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+        offCtx.fillStyle = color;
+        const clamped = Math.min(Math.max(value, minPressureValue), maxPressureValue);
+        const normalized = clamped / maxPressureValue; // more opaque for higher pressure
+        offCtx.globalAlpha = Math.min(0.85, 0.35 + normalized * 0.5);
+        offCtx.fillRect(x, y, cellW, cellH);
+      }
+    }
 
-        // Cell border
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = isDark ? '#334155' : '#cbd5e1';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, y, cellW, cellH);
+    ctx.filter = 'blur(8px)';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(offscreen, 0, 0);
+    ctx.filter = 'none';
 
-        // Value label
-        ctx.font = '10px Inter, system-ui';
-        ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
-        ctx.fillText(String(Math.round(value)), x + 6, y + 12);
+    if (showNumbers) {
+      ctx.globalAlpha = 1;
+      ctx.font = '10px Inter, system-ui';
+      ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const value = smoothedGrid[r]?.[c] ?? -1;
+          if (value === -1) continue;
+          const x = gridX + c * cellW;
+          const y = gridY + r * cellH;
+          ctx.fillText(String(Math.round(value)), x + 6, y + 12);
+        }
       }
     }
   };
@@ -91,129 +146,46 @@ const FootPressureHeatmap = ({
   useEffect(() => {
     draw();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDark, grid, dims]);
-
-  // Update elapsed time every second
-  useEffect(() => {
-    const id = setInterval(() => {
-      setElapsedTime((t) => t + 1);
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const formatTime = (seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+  }, [isDark, grid, dims, showNumbers]);
 
   return (
-    <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
+    <div
+      className={`rounded-lg shadow-lg p-4 ${isDark ? 'bg-slate-800' : 'bg-white'}`}
+      style={{ maxWidth: 320, margin: '0 auto' }}
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
           Foot Pressure Heatmap (2D)
         </h3>
         <div className="flex items-center gap-3">
-          <span className={`text-sm font-mono ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-            ⏱ {formatTime(elapsedTime)}
-          </span>
-          {onPauseToggle && (
-            <button
-              onClick={onPauseToggle}
-              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
-                isPaused
-                  ? isDark
-                    ? 'bg-green-900 hover:bg-green-800 text-green-300'
-                    : 'bg-green-100 hover:bg-green-200 text-green-700'
-                  : isDark
-                  ? 'bg-orange-900 hover:bg-orange-800 text-orange-300'
-                  : 'bg-orange-100 hover:bg-orange-200 text-orange-700'
-              }`}
-            >
-              {isPaused ? 'Resume' : 'Pause'}
-            </button>
-          )}
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={showNumbers}
+              onChange={(e) => setShowNumbers(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span className={isDark ? 'text-gray-300' : 'text-gray-600'}>
+              Show numbers
+            </span>
+          </label>
         </div>
       </div>
 
       {/* Canvas */}
-      <div className={`rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
-        <canvas ref={canvasRef} style={{ width: '100%', height: 360 }} />
+      <div className={`relative rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
+        <img
+          src="/leftfoot.png"
+          alt="Left foot overlay"
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          style={{ opacity: isDark ? 0.35 : 0.25 }}
+        />
+        <canvas ref={canvasRef} style={{ width: '100%', height: 520 }} />
       </div>
 
-      {/* Legend */}
-      <div className="mt-4 mb-2 flex items-center justify-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#10b981' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Low</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#3b82f6' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Medium</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#f59e0b' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>High</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#ef4444' }}></div>
-          <span className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Very High</span>
-        </div>
-      </div>
 
-      {/* Pressure values grid */}
-      <div
-        className="grid gap-2 mt-4"
-        style={{
-          gridTemplateColumns: `repeat(${dims.cols || gridCols}, minmax(0, 1fr))`,
-        }}
-      >
-        {grid.length > 0 ? (
-          grid.flat().map((value, idx) => {
-            if (value === -1) {
-              return (
-                <div
-                  key={`empty-${idx}`}
-                  className={`p-2 rounded text-center text-xs font-semibold ${
-                    isDark ? 'bg-slate-700 text-gray-500' : 'bg-gray-100 text-gray-400'
-                  }`}
-                >
-                  —
-                </div>
-              );
-            }
 
-            const pressure = value || 0;
-            const normalized = Math.min(pressure / 100, 1);
-            let bgColor = '#10b981';
-            if (normalized >= 0.75) bgColor = '#ef4444';
-            else if (normalized >= 0.5) bgColor = '#f59e0b';
-            else if (normalized >= 0.25) bgColor = '#3b82f6';
-
-            return (
-              <div
-                key={`val-${idx}`}
-                className={`p-2 rounded text-center text-xs font-semibold ${
-                  isDark ? 'bg-slate-700 text-gray-300' : 'bg-gray-100 text-gray-700'
-                }`}
-                style={{ backgroundColor: `${bgColor}22`, borderLeft: `3px solid ${bgColor}` }}
-              >
-                {Math.round(pressure)}
-              </div>
-            );
-          })
-        ) : (
-          <div
-            className={`text-center py-4 ${
-              isDark ? 'text-gray-400' : 'text-gray-500'
-            }`}
-            style={{ gridColumn: '1 / -1' }}
-          >
-            No pressure data available
-          </div>
-        )}
-      </div>
+      {/* Pressure values grid removed for thinner view */}
     </div>
   );
 };

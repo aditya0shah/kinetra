@@ -1,16 +1,16 @@
 import json
 import sys
 import os
-from stats import calculate_region_stats, split_into_regions
+import time
+from stats import calculate_region_stats, split_into_regions, apply_ema_stats
 from db import (
         get_all_workouts,
         get_workout_by_id,
         create_workout,
         update_workout,
         delete_workout,
-        save_session_stats,
         save_pressure_data,
-        sessions_collection,
+        workouts_collection,
     )
 
 # Support running both as a package (python -m backend.app)
@@ -23,13 +23,111 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# LiveKit imports for token generation
+try:
+    from livekit import api
+except ImportError:
+    api = None
+    print("Warning: LiveKit not installed. Agent features will be disabled.")
+
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    socketio = SocketIO(
+        app, 
+        cors_allowed_origins="*",
+        ping_timeout=60,
+        ping_interval=25,
+        engineio_logger=False,
+        socketio_logger=False,
+        async_mode='threading'
+    )
     
     # Track active sessions
     active_sessions = {}  # {workout_id: {'connected': bool, 'frame_count': int}}
+    ema_state = {}  # {workout_id: smoothed_stats}
+    EMA_ALPHA = 0.05
+    EVENT_DEFINITIONS = {
+        'region_force_high': {
+            'mode': 'per_region_stat',
+            'stat': 'mean_force',
+            'threshold': 50,
+            'comparison': 'gt',
+            'min_interval_seconds': 5,
+        },
+        'region_force_low': {
+            'mode': 'per_region_stat',
+            'stat': 'mean_force',
+            'threshold': 5,
+            'comparison': 'lt',
+            'min_interval_seconds': 5,
+        },
+    }
+
+    def _to_epoch_seconds(timestamp):
+        if isinstance(timestamp, (int, float)):
+            return float(timestamp) / 1000.0 if timestamp > 1e12 else float(timestamp)
+        return time.time()
+
+    def _detect_events(stats, timestamp=None):
+        if not isinstance(stats, dict):
+            return []
+        events = []
+        for event_type, definition in EVENT_DEFINITIONS.items():
+            mode = definition.get('mode')
+            if mode == 'per_region_stat':
+                stat_name = definition.get('stat')
+                threshold = definition.get('threshold')
+                comparison = definition.get('comparison', 'gt')
+                for region_name, region_stats in stats.items():
+                    if not isinstance(region_stats, dict):
+                        continue
+                    value = region_stats.get(stat_name)
+                    if not isinstance(value, (int, float)) or not isinstance(threshold, (int, float)):
+                        continue
+                    if comparison == 'lt':
+                        is_match = value <= threshold
+                    else:
+                        is_match = value >= threshold
+                    if is_match:
+                        events.append({
+                            'type': event_type,
+                            'region': region_name,
+                            'stat': stat_name,
+                            'value': float(value),
+                            'threshold': float(threshold),
+                            'comparison': comparison,
+                            'timestamp': timestamp,
+                        })
+        return events
+
+    def _get_events_for_save(workout_id, stats, timestamp=None, source='backend'):
+        if not workout_id or not isinstance(stats, dict):
+            return []
+        events = _detect_events(stats, timestamp=timestamp)
+        if not events:
+            return []
+
+        now_seconds = _to_epoch_seconds(timestamp)
+        session_state = active_sessions.get(workout_id, {})
+        last_event_times = session_state.setdefault('last_event_times', {})
+        filtered_events = []
+        for event in events:
+            event_type = event.get('type')
+            last_seen = last_event_times.get(event_type, 0)
+            definition = EVENT_DEFINITIONS.get(event_type, {})
+            min_interval = definition.get('min_interval_seconds', 0)
+            if now_seconds - last_seen < min_interval:
+                continue
+            event['source'] = source
+            last_event_times[event_type] = now_seconds
+            filtered_events.append(event)
+
+        if workout_id in active_sessions:
+            active_sessions[workout_id]['last_event_times'] = last_event_times
+        return filtered_events
 
     @app.after_request
     def add_cors_headers(response):
@@ -47,6 +145,79 @@ def create_app() -> Flask:
     def health():
         return jsonify({"status": "healthy"})
 
+    @app.get("/livekit-token")
+    def get_livekit_token():
+        """Generate a LiveKit access token for connecting to the agent"""
+        if not api:
+            return jsonify({
+                "error": "LiveKit SDK not installed",
+                "hint": "Run: pip install livekit-api"
+            }), 503
+        
+        try:
+            # Get LiveKit credentials from environment
+            livekit_url = os.getenv('LIVEKIT_URL')
+            livekit_api_key = os.getenv('LIVEKIT_API_KEY')
+            livekit_api_secret = os.getenv('LIVEKIT_API_SECRET')
+            
+            # Validate credentials are configured
+            if not livekit_url:
+                return jsonify({
+                    "error": "LiveKit not configured",
+                    "message": "LIVEKIT_URL is not set in .env",
+                    "instructions": [
+                        "1. Sign up at https://cloud.livekit.io",
+                        "2. Create a project and get credentials",
+                        "3. Add to backend/.env:",
+                        "   LIVEKIT_URL=wss://your-project.livekit.cloud",
+                        "   LIVEKIT_API_KEY=your-api-key",
+                        "   LIVEKIT_API_SECRET=your-api-secret"
+                    ]
+                }), 503
+            
+            if not livekit_api_key or not livekit_api_secret:
+                return jsonify({
+                    "error": "LiveKit credentials incomplete",
+                    "message": "LIVEKIT_API_KEY or LIVEKIT_API_SECRET not set",
+                    "hint": "Add both to backend/.env"
+                }), 503
+            
+            # Generate a unique participant identity
+            import time
+            participant_identity = f"user_{int(time.time())}"
+            
+            # Create access token
+            token = api.AccessToken(livekit_api_key, livekit_api_secret) \
+                .with_identity(participant_identity) \
+                .with_name("Kinetra User") \
+                .with_grants(api.VideoGrants(
+                    room_join=True,
+                    room="kinetra-workout-session",
+                    can_publish=True,
+                    can_subscribe=True,
+                ))
+            
+            jwt_token = token.to_jwt()
+            
+            return jsonify({
+                "serverUrl": livekit_url,
+                "token": jwt_token,
+                "participantIdentity": participant_identity,
+                "status": "success"
+            }), 200
+            
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error generating LiveKit token: {error_message}")
+            import traceback
+            traceback.print_exc()
+            
+            return jsonify({
+                "error": "Token generation failed",
+                "message": error_message,
+                "hint": "Check that your LIVEKIT_API_KEY and LIVEKIT_API_SECRET are correct"
+            }), 500
+
     @app.get("/workouts")
     def get_workouts():
         """Fetch all workouts from MongoDB"""
@@ -57,8 +228,6 @@ def create_app() -> Flask:
             return jsonify({"error": str(e)}), 500
 
             
-                
-                
     @app.get("/workouts/<workout_id>")
     def get_workout(workout_id):
         """Fetch a specific workout from MongoDB with pressure frames (if available)"""
@@ -66,30 +235,6 @@ def create_app() -> Flask:
             workout = get_workout_by_id(workout_id)
             if not workout:
                 return jsonify({"error": "Workout not found"}), 404
-
-            # Attach pressure frames if sessions collection is available
-            try:
-                if sessions_collection is not None:
-                    pressure_frames = list(
-                        sessions_collection.find({"workout_id": workout_id}).sort("timestamp", 1)
-                    )
-                    def serialize_frame(frame):
-                        ts = frame.get("timestamp")
-                        # Ensure timestamp is JSON-serializable
-                        if hasattr(ts, "isoformat"):
-                            ts = ts.isoformat()
-                        return {
-                            "matrix": frame.get("pressure_matrix", []),
-                            "stats": frame.get("calculated_stats", {}),
-                            "timestamp": ts,
-                            "nodes": frame.get("nodes", []),
-                        }
-
-                    workout["pressure_frames"] = [serialize_frame(f) for f in pressure_frames]
-            except Exception:
-                # Non-fatal; continue without frames
-                pass
-
             return jsonify({"status": "success", "data": workout}), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -144,52 +289,6 @@ def create_app() -> Flask:
     def start_session():
         payload = request.get_json(silent=True) or {}
         return jsonify({"status": "ok", "received": payload})
-
-    @app.post("/stats")  # Calculate stats for one matrix frame
-    def matrix():
-        payload = request.get_json(silent=True)
-        if payload is None:
-            return jsonify({"error": "Missing JSON body"}), 400
-
-        parsed = payload.get("matrix")
-        if parsed is None:
-            return jsonify({"error": "Missing required field: matrix"}), 400
-
-        if not isinstance(parsed, list) or not all(
-            isinstance(row, list) for row in parsed
-        ):
-            return jsonify({"error": "matrix must be a 2D array"}), 400
-        
-        try:
-            # Convert matrix to numpy array for calculation
-            matrix_array = np.array(parsed, dtype=float)
-            
-            # Calculate stats using stats.py functions
-            regions = split_into_regions(matrix_array)
-            calculated_stats = calculate_region_stats(regions)
-            
-            # Save pressure data to database (required)
-            workout_id = payload.get("session_id")
-            if not workout_id:
-                return jsonify({"error": "Missing required field: session_id"}), 400
-
-            nodes = payload.get("nodes")
-            timestamp = payload.get("timestamp")
-            save_pressure_data(workout_id, parsed, calculated_stats, nodes=nodes, timestamp=timestamp)
-            
-            # Return the calculated stats to frontend for visualization
-            return jsonify({
-                "status": "success",
-                "data": {
-                    "matrix": parsed,
-                    "stats": calculated_stats
-                }
-            }), 200
-            
-        except Exception as e:
-            print(f"Error calculating stats: {e}")
-            return jsonify({"error": str(e)}), 500
-
     # ==================== WebSocket Events ====================
     
     @socketio.on('connect')
@@ -214,6 +313,7 @@ def create_app() -> Flask:
         # Remove sessions after iteration
         for workout_id in sessions_to_remove:
             del active_sessions[workout_id]
+            ema_state.pop(workout_id, None)
         
         if sessions_to_remove:
             print(f"✅ Cleaned up {len(sessions_to_remove)} session(s) for client {client_id}")
@@ -246,53 +346,47 @@ def create_app() -> Flask:
             nodes = data.get('nodes')
             timestamp = data.get('timestamp')
             
-            print(f"📥 Received pressure_frame for workout: {workout_id}, matrix size: {len(matrix) if matrix else 0}")
-            
-            if not workout_id or not matrix:
-                print(f"❌ Missing data - workout_id: {workout_id}, matrix: {matrix is not None}")
-                emit('error', {'message': 'Missing workout_id or matrix'})
-                return
-            
-            # Check if session is still active
-            if workout_id not in active_sessions or not active_sessions[workout_id].get('connected'):
-                print(f"⚠️ Ignoring frame for inactive session: {workout_id}")
-                emit('error', {'message': 'Session not active or already ended'})
-                return
-            
             # Calculate stats from the matrix
             matrix_array = np.array(matrix, dtype=float)
-            if matrix_array.size == 0:
-                print("❌ Empty matrix")
-                emit('error', {'message': 'Invalid matrix'})
-                return
             
             # Split into anatomical regions and compute stats per region
             regions = split_into_regions(matrix_array)
             calculated_stats = calculate_region_stats(regions)
-            print(f"✅ Calculated stats for {len(calculated_stats)} regions")
             
+            prev_ema = ema_state.get(workout_id)
+            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
+            if smoothed_stats:
+                ema_state[workout_id] = smoothed_stats
+                if workout_id in active_sessions:
+                    active_sessions[workout_id]['ema_stats'] = smoothed_stats
+
             # Save pressure data to MongoDB
+            events = _get_events_for_save(
+                workout_id,
+                calculated_stats,
+                timestamp=timestamp,
+                source='ws_pressure_frame'
+            )
             save_pressure_data(
                 workout_id, 
                 matrix, 
-                calculated_stats, 
+                calculated_stats,
+                smoothed_stats=smoothed_stats,
                 nodes=nodes, 
-                timestamp=timestamp
+                timestamp=timestamp,
+                events=events
             )
-            
+
             # Update session metrics
             if workout_id in active_sessions:
                 active_sessions[workout_id]['frame_count'] += 1
             
-            # Send calculated stats back to all connected clients for this session
-            print(f"📤 Emitting frame_processed to room: {workout_id}")
             emit('frame_processed', {
-                'stats': calculated_stats,
+                'stats': smoothed_stats or calculated_stats,
+                'raw_stats': calculated_stats,
                 'frame_count': active_sessions.get(workout_id, {}).get('frame_count', 0),
                 'timestamp': timestamp
             }, room=workout_id)
-            
-            print(f"✅ Frame {active_sessions.get(workout_id, {}).get('frame_count', 0)} processed for workout {workout_id}")
             
         except Exception as e:
             print(f"❌ Error processing pressure frame: {e}")
@@ -312,17 +406,32 @@ def create_app() -> Flask:
             if not workout_id or not calculated_stats:
                 emit('error', {'message': 'Missing workout_id or stats'})
                 return
+            prev_ema = ema_state.get(workout_id)
+            smoothed_stats = apply_ema_stats(calculated_stats, prev_ema, EMA_ALPHA)
+            if smoothed_stats:
+                ema_state[workout_id] = smoothed_stats
+                if workout_id in active_sessions:
+                    active_sessions[workout_id]['ema_stats'] = smoothed_stats
             # Persist a stats-only frame (matrix optional)
+            events = _get_events_for_save(
+                workout_id,
+                calculated_stats,
+                timestamp=timestamp,
+                source='ws_stats_frame'
+            )
             save_pressure_data(
                 workout_id,
                 matrix if matrix is not None else [],
                 calculated_stats,
+                smoothed_stats=smoothed_stats,
                 nodes=nodes,
-                timestamp=timestamp
+                timestamp=timestamp,
+                events=events
             )
             # Broadcast to session room
             emit('stats_update', {
-                'stats': calculated_stats,
+                'stats': smoothed_stats or calculated_stats,
+                'raw_stats': calculated_stats,
                 'timestamp': timestamp
             }, room=workout_id)
         except Exception as e:
@@ -342,6 +451,7 @@ def create_app() -> Flask:
                 frame_count = active_sessions[workout_id]['frame_count']
                 print(f"✅ Session {workout_id} ended cleanly. Total frames: {frame_count}")
                 del active_sessions[workout_id]
+                ema_state.pop(workout_id, None)
             else:
                 print(f"ℹ️ Session {workout_id} was already cleaned up")
             emit('session_ended', {'workout_id': workout_id})
@@ -351,25 +461,31 @@ def create_app() -> Flask:
     # ==================== MongoDB Change Stream (broadcast) ====================
     def watch_sessions():
         from db import mongodb_available
-        if not mongodb_available or sessions_collection is None:
+        if not mongodb_available:
             print('Change stream unavailable: MongoDB not available')
             return
         try:
-            with sessions_collection.watch([{ '$match': { 'operationType': 'insert' } }]) as stream:
-                print('Started MongoDB change stream for sessions')
+            with workouts_collection.watch(
+                [{ '$match': { 'operationType': 'update' } }],
+                full_document='updateLookup'
+            ) as stream:
+                print('Started MongoDB change stream for workouts')
                 for change in stream:
-                    full_doc = change.get('fullDocument', {})
-                    workout_id = full_doc.get('workout_id')
-                    stats = full_doc.get('calculated_stats')
-                    ts = full_doc.get('timestamp')
-                    if workout_id and stats:
-                        # Emit stats_update to the workout room
+                    full_doc = change.get('fullDocument', {}) or {}
+                    workout_id = full_doc.get('_id')
+                    frames = full_doc.get('pressure_frames') or []
+                    last_frame = frames[-1] if frames else None
+                    if workout_id and last_frame:
+                        ts = last_frame.get('timestamp')
+                        smoothed_stats = last_frame.get('smoothed_stats') or last_frame.get('calculated_stats')
                         socketio.emit('stats_update', {
-                            'stats': stats,
-                            'timestamp': getattr(ts, 'isoformat', lambda: ts)() if ts else None
-                        }, room=workout_id)
+                            'stats': smoothed_stats,
+                            'timestamp': getattr(ts, 'isoformat', lambda: ts)() if ts else ts
+                        }, room=str(workout_id))
         except Exception as e:
             print(f'Change stream error: {e}')
+            
+    
 
     # Start background change stream watcher once
     socketio.start_background_task(watch_sessions)

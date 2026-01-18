@@ -37,10 +37,9 @@ UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> cent
 # === Configuration ===
 DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUID scan if not found)
 
-NUM_ROWS = 12
-NUM_COLS = 8
-# Binary frame: magic(2) + frame_id(2) + matrix(12*8*2) = 196 bytes (same as backend/ble.py)
-PAYLOAD_LEN = 4 + NUM_ROWS * NUM_COLS * 2
+NUM_ROWS = 13
+NUM_COLS = 9
+MAX_CLIP = 5000.0
 EPISODE_DURATION = 5.0  # seconds
 SAMPLING_RATE = 1.6  # Hz (matrices per second)
 MATRICES_PER_EPISODE = int(EPISODE_DURATION * SAMPLING_RATE)  # 15
