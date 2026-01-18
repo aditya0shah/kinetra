@@ -8,7 +8,7 @@ import FootPressureHeatmap from '../components/FootPressureHeatmap';
 import TimeSeriesChart from '../components/TimeSeriesChart';
 import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
-import { startMockDeviceStream, convertToMatrix } from '../services/mockdevice';
+import { decodeFrameU16 } from '../services/ble';
 import { sendstat, getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
 import { 
   connectWebSocket, 
@@ -29,6 +29,7 @@ const EpisodeDetail = () => {
   const navigate = useNavigate();
   const [workoutDetail, setWorkoutDetail] = useState(null);
   const [pressureData, setPressureData] = useState([]);
+  const [gridDims, setGridDims] = useState({ rows: 4, cols: 4 });
   const [statsData, setStatsData] = useState(null);
   const [timeSeriesStats, setTimeSeriesStats] = useState([]); // Accumulate time-series stats for graphing
   const [pressureMatrixData, setPressureMatrixData] = useState([]); // Accumulate raw pressure matrix data to save to DB
@@ -201,6 +202,11 @@ const EpisodeDetail = () => {
     }
   };
 
+  const hasPressureData = Array.isArray(pressureData)
+    ? pressureData.length > 0
+    : Array.isArray(pressureData?.frames) && pressureData.frames.length > 0;
+  const displayPressureData = hasPressureData ? pressureData : workout?.footPressureData;
+
   if (!workout) {
     return (
       <div className={`min-h-screen transition-colors duration-300 ${isDark ? 'bg-slate-900' : 'bg-gradient-to-br from-blue-50 to-green-50'}`}>
@@ -306,7 +312,7 @@ const EpisodeDetail = () => {
         <div className="space-y-8">
           {/* Foot Pressure Heatmap */}
           <FootPressureHeatmap 
-            footPressureData={pressureData.length > 0 ? pressureData : workout.footPressureData} 
+            footPressureData={displayPressureData} 
             isDark={isDark}
           />
 

@@ -11,6 +11,7 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
+print("MONGODB_URI", os.getenv("MONGODB_URI"))
 MONGODB_URI = os.getenv("MONGODB_URI")
 
 # Global variables

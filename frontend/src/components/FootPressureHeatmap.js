@@ -1,13 +1,21 @@
 import React, { useRef, useEffect, useState } from 'react';
 import usePressureGrid from '../hooks/usePressureGrid';
 
-const FootPressureHeatmap = ({ footPressureData, isDark, isPaused, onPauseToggle }) => {
+const FootPressureHeatmap = ({
+  footPressureData,
+  isDark,
+  isPaused,
+  onPauseToggle,
+  gridRows = 4,
+  gridCols = 4,
+}) => {
   const canvasRef = useRef(null);
   const [elapsedTime, setElapsedTime] = useState(0);
 
-  // Handle undefined or empty footPressureData
-  const data = Array.isArray(footPressureData) && footPressureData.length > 0 
-    ? footPressureData 
+  const resolvedData = Array.isArray(footPressureData)
+    ? footPressureData
+    : footPressureData?.frames
+    ? footPressureData
     : [];
 
   const getPressureColor = (pressure) => {
@@ -18,7 +26,7 @@ const FootPressureHeatmap = ({ footPressureData, isDark, isPaused, onPauseToggle
     return '#ef4444'; // Red
   };
 
-  const { grid, dims } = usePressureGrid(data, 0, { gridCols: 4, gridRows: 4 });
+  const { grid, dims } = usePressureGrid(resolvedData, 0, { gridCols, gridRows });
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -155,26 +163,53 @@ const FootPressureHeatmap = ({ footPressureData, isDark, isPaused, onPauseToggle
       </div>
 
       {/* Pressure values grid */}
-      <div className="grid grid-cols-4 gap-2 mt-4">
-        {data.length > 0 ? data.map((node) => {
-          const pressure = node.pressure || 0;
-          const normalized = Math.min(pressure / 100, 1);
-          let bgColor = '#10b981';
-          if (normalized >= 0.75) bgColor = '#ef4444';
-          else if (normalized >= 0.5) bgColor = '#f59e0b';
-          else if (normalized >= 0.25) bgColor = '#3b82f6';
+      <div
+        className="grid gap-2 mt-4"
+        style={{
+          gridTemplateColumns: `repeat(${dims.cols || gridCols}, minmax(0, 1fr))`,
+        }}
+      >
+        {grid.length > 0 ? (
+          grid.flat().map((value, idx) => {
+            if (value === -1) {
+              return (
+                <div
+                  key={`empty-${idx}`}
+                  className={`p-2 rounded text-center text-xs font-semibold ${
+                    isDark ? 'bg-slate-700 text-gray-500' : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  —
+                </div>
+              );
+            }
 
-          return (
-            <div
-              key={node.id}
-              className={`p-2 rounded text-center text-xs font-semibold ${isDark ? 'bg-slate-700 text-gray-300' : 'bg-gray-100 text-gray-700'}`}
-              style={{ backgroundColor: `${bgColor}22`, borderLeft: `3px solid ${bgColor}` }}
-            >
-              {Math.round(pressure)}
-            </div>
-          );
-        }) : (
-          <div className={`col-span-4 text-center py-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+            const pressure = value || 0;
+            const normalized = Math.min(pressure / 100, 1);
+            let bgColor = '#10b981';
+            if (normalized >= 0.75) bgColor = '#ef4444';
+            else if (normalized >= 0.5) bgColor = '#f59e0b';
+            else if (normalized >= 0.25) bgColor = '#3b82f6';
+
+            return (
+              <div
+                key={`val-${idx}`}
+                className={`p-2 rounded text-center text-xs font-semibold ${
+                  isDark ? 'bg-slate-700 text-gray-300' : 'bg-gray-100 text-gray-700'
+                }`}
+                style={{ backgroundColor: `${bgColor}22`, borderLeft: `3px solid ${bgColor}` }}
+              >
+                {Math.round(pressure)}
+              </div>
+            );
+          })
+        ) : (
+          <div
+            className={`text-center py-4 ${
+              isDark ? 'text-gray-400' : 'text-gray-500'
+            }`}
+            style={{ gridColumn: '1 / -1' }}
+          >
             No pressure data available
           </div>
         )}

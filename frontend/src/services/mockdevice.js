@@ -3,17 +3,20 @@
  * Simulates streaming foot pressure data from a Bluetooth device
  */
 
-// Initialize a 16-node foot insole pressure grid (4x4)
-const initializePressureGrid = () => {
+// Initialize a foot insole pressure grid
+const initializePressureGrid = (rows = 4, cols = 4) => {
   const nodes = [];
-  for (let i = 0; i < 16; i++) {
+  const count = rows * cols;
+  const xStep = cols > 1 ? 100 / (cols - 1) : 0;
+  const yStep = rows > 1 ? 100 / (rows - 1) : 0;
+  for (let i = 0; i < count; i++) {
     nodes.push({
       id: i,
       position: {
-        x: (i % 4) * 25,
-        y: Math.floor(i / 4) * 33.33
+        x: (i % cols) * xStep,
+        y: Math.floor(i / cols) * yStep
       },
-      pressure: 0
+      pressure: 0,
     });
   }
   return nodes;
@@ -26,7 +29,12 @@ const initializePressureGrid = () => {
  * @param {number} interval - Interval in ms between data points (default: 250ms = 1/4 second)
  * @returns {Function} Stop function to halt the stream
  */
-export const startMockDeviceStream = (onDataReceived, interval = 250) => {
+export const startMockDeviceStream = (onDataReceived, interval = 250, options = {}) => {
+  const {
+    rows = 4,
+    cols = 4,
+    includeNodes = true,
+  } = options;
   let streamActive = true;
   let frameCount = 0;
 
@@ -34,16 +42,18 @@ export const startMockDeviceStream = (onDataReceived, interval = 250) => {
     if (!streamActive) return;
 
     // Generate random pressure data from 1 to 10
-    const pressureData = initializePressureGrid().map((node) => ({
+    const pressureData = includeNodes
+      ? initializePressureGrid(rows, cols).map((node) => ({
       ...node,
       pressure: Math.random() * 9 + 1  // Random value between 1 and 10
-    }));
+    }))
+      : [];
 
-    // Create 4x4 matrix of random values (1-10)
+    // Create rows x cols matrix of random values (1-10)
     const matrix = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < rows; i++) {
       const row = [];
-      for (let j = 0; j < 4; j++) {
+      for (let j = 0; j < cols; j++) {
         row.push(Math.random() * 9 + 1);  // Random value between 1 and 10
       }
       matrix.push(row);
@@ -54,7 +64,7 @@ export const startMockDeviceStream = (onDataReceived, interval = 250) => {
       timestamp: Date.now(),
       frameNumber: frameCount++,
       sensorType: 'insole_pressure',
-      nodes: pressureData,
+      ...(includeNodes ? { nodes: pressureData } : {}),
       matrix: matrix
     };
 

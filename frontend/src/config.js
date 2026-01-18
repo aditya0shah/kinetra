@@ -9,6 +9,14 @@ const CONFIG = {
     SKELETON_LATEST: '/api/skeleton/latest',
     SESSION_START: '/session/start',
   },
+  BLE: {
+    DEVICE_NAME: process.env.REACT_APP_BLE_DEVICE_NAME || 'BLE_Test',
+    ROWS: Number(process.env.REACT_APP_BLE_ROWS || 12),
+    COLS: Number(process.env.REACT_APP_BLE_COLS || 8),
+    MIN_V: Number(process.env.REACT_APP_BLE_MIN || -1),
+    MAX_V: Number(process.env.REACT_APP_BLE_MAX || 3700),
+    USE_SEQUENCE: process.env.REACT_APP_BLE_USE_SEQUENCE === 'true',
+  },
 };
 
 export default CONFIG;
