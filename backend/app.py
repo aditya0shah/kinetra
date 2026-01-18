@@ -246,30 +246,12 @@ def create_app() -> Flask:
             nodes = data.get('nodes')
             timestamp = data.get('timestamp')
             
-            print(f"📥 Received pressure_frame for workout: {workout_id}, matrix size: {len(matrix) if matrix else 0}")
-            
-            if not workout_id or not matrix:
-                print(f"❌ Missing data - workout_id: {workout_id}, matrix: {matrix is not None}")
-                emit('error', {'message': 'Missing workout_id or matrix'})
-                return
-            
-            # Check if session is still active
-            if workout_id not in active_sessions or not active_sessions[workout_id].get('connected'):
-                print(f"⚠️ Ignoring frame for inactive session: {workout_id}")
-                emit('error', {'message': 'Session not active or already ended'})
-                return
-            
             # Calculate stats from the matrix
             matrix_array = np.array(matrix, dtype=float)
-            if matrix_array.size == 0:
-                print("❌ Empty matrix")
-                emit('error', {'message': 'Invalid matrix'})
-                return
             
             # Split into anatomical regions and compute stats per region
             regions = split_into_regions(matrix_array)
             calculated_stats = calculate_region_stats(regions)
-            print(f"✅ Calculated stats for {len(calculated_stats)} regions")
             
             # Save pressure data to MongoDB
             save_pressure_data(
@@ -284,15 +266,11 @@ def create_app() -> Flask:
             if workout_id in active_sessions:
                 active_sessions[workout_id]['frame_count'] += 1
             
-            # Send calculated stats back to all connected clients for this session
-            print(f"📤 Emitting frame_processed to room: {workout_id}")
             emit('frame_processed', {
                 'stats': calculated_stats,
                 'frame_count': active_sessions.get(workout_id, {}).get('frame_count', 0),
                 'timestamp': timestamp
             }, room=workout_id)
-            
-            print(f"✅ Frame {active_sessions.get(workout_id, {}).get('frame_count', 0)} processed for workout {workout_id}")
             
         except Exception as e:
             print(f"❌ Error processing pressure frame: {e}")

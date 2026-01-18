@@ -151,12 +151,7 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
 
     try:
         # Normalize timestamp: if provided, convert epoch ms to datetime; else use server time
-        if timestamp is None:
-            ts = datetime.utcnow()
-        elif isinstance(timestamp, (int, float)):
-            ts = datetime.utcfromtimestamp(timestamp / 1000.0)
-        else:
-            ts = timestamp
+        ts = timestamp
 
         # Create pressure frame document
         pressure_frame = {
@@ -165,6 +160,8 @@ def save_pressure_data(workout_id, pressure_matrix, calculated_stats, nodes=None
             'calculated_stats': calculated_stats,
             'timestamp': ts,
         }
+
+        print(f"🧾 Saving pressure data to MongoDB")
 
         # Include nodes if provided
         if nodes is not None:

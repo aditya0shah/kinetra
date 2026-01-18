@@ -8,7 +8,7 @@ const FootPressureHeatmap = ({
   gridCols = 4,
 }) => {
   const canvasRef = useRef(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
+  const [showNumbers, setShowNumbers] = useState(false);
 
   const resolvedData = Array.isArray(footPressureData)
     ? footPressureData
@@ -17,11 +17,14 @@ const FootPressureHeatmap = ({
     : [];
 
   const getPressureColor = (pressure) => {
-    const p = Math.min(Math.max(pressure, 0), 100);
-    if (p < 25) return '#10b981'; // Green
-    if (p < 50) return '#3b82f6'; // Blue
-    if (p < 75) return '#f59e0b'; // Amber
-    return '#ef4444'; // Red
+    // Lower value == higher pressure (darker)
+    const maxValue = 3700;
+    const clamped = Math.min(Math.max(pressure, 0), maxValue);
+    const inverted = 1 - clamped / maxValue; // 0..1 (higher is more pressure)
+    if (inverted < 0.25) return '#10b981'; // Low
+    if (inverted < 0.5) return '#3b82f6'; // Medium
+    if (inverted < 0.75) return '#f59e0b'; // High
+    return '#ef4444'; // Very High
   };
 
   const { grid, dims } = usePressureGrid(resolvedData, 0, { gridCols, gridRows });
@@ -31,7 +34,7 @@ const FootPressureHeatmap = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const width = canvas.offsetWidth;
-    const height = 360;
+    const height = 520;
     canvas.width = width;
     canvas.height = height;
 
@@ -69,7 +72,10 @@ const FootPressureHeatmap = ({
 
         const color = getPressureColor(value);
         ctx.fillStyle = color;
-        ctx.globalAlpha = Math.min(0.85, 0.35 + (value / 100) * 0.5);
+        const maxValue = 3700;
+        const clamped = Math.min(Math.max(value, 0), maxValue);
+        const inverted = 1 - clamped / maxValue; // darker for higher pressure
+        ctx.globalAlpha = Math.min(0.85, 0.35 + inverted * 0.5);
         ctx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
 
         // Cell border
@@ -78,10 +84,11 @@ const FootPressureHeatmap = ({
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y, cellW, cellH);
 
-        // Value label
-        ctx.font = '10px Inter, system-ui';
-        ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
-        ctx.fillText(String(Math.round(value)), x + 6, y + 12);
+        if (showNumbers) {
+          ctx.font = '10px Inter, system-ui';
+          ctx.fillStyle = isDark ? '#e2e8f0' : '#1f2937';
+          ctx.fillText(String(Math.round(value)), x + 6, y + 12);
+        }
       }
     }
   };
@@ -89,39 +96,35 @@ const FootPressureHeatmap = ({
   useEffect(() => {
     draw();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDark, grid, dims]);
-
-  // Update elapsed time every second
-  useEffect(() => {
-    const id = setInterval(() => {
-      setElapsedTime((t) => t + 1);
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const formatTime = (seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
+  }, [isDark, grid, dims, showNumbers]);
 
   return (
-    <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
+    <div
+      className={`rounded-lg shadow-lg p-4 ${isDark ? 'bg-slate-800' : 'bg-white'}`}
+      style={{ maxWidth: 320, margin: '0 auto' }}
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
           Foot Pressure Heatmap (2D)
         </h3>
         <div className="flex items-center gap-3">
-          <span className={`text-sm font-mono ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-            ⏱ {formatTime(elapsedTime)}
-          </span>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={showNumbers}
+              onChange={(e) => setShowNumbers(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span className={isDark ? 'text-gray-300' : 'text-gray-600'}>
+              Show numbers
+            </span>
+          </label>
         </div>
       </div>
 
       {/* Canvas */}
       <div className={`rounded-lg ${isDark ? 'bg-slate-900' : 'bg-gray-50'}`}>
-        <canvas ref={canvasRef} style={{ width: '100%', height: 360 }} />
+        <canvas ref={canvasRef} style={{ width: '100%', height: 520 }} />
       </div>
 
       {/* Legend */}
@@ -144,58 +147,7 @@ const FootPressureHeatmap = ({
         </div>
       </div>
 
-      {/* Pressure values grid */}
-      <div
-        className="grid gap-2 mt-4"
-        style={{
-          gridTemplateColumns: `repeat(${dims.cols || gridCols}, minmax(0, 1fr))`,
-        }}
-      >
-        {grid.length > 0 ? (
-          grid.flat().map((value, idx) => {
-            if (value === -1) {
-              return (
-                <div
-                  key={`empty-${idx}`}
-                  className={`p-2 rounded text-center text-xs font-semibold ${
-                    isDark ? 'bg-slate-700 text-gray-500' : 'bg-gray-100 text-gray-400'
-                  }`}
-                >
-                  —
-                </div>
-              );
-            }
-
-            const pressure = value || 0;
-            const normalized = Math.min(pressure / 100, 1);
-            let bgColor = '#10b981';
-            if (normalized >= 0.75) bgColor = '#ef4444';
-            else if (normalized >= 0.5) bgColor = '#f59e0b';
-            else if (normalized >= 0.25) bgColor = '#3b82f6';
-
-            return (
-              <div
-                key={`val-${idx}`}
-                className={`p-2 rounded text-center text-xs font-semibold ${
-                  isDark ? 'bg-slate-700 text-gray-300' : 'bg-gray-100 text-gray-700'
-                }`}
-                style={{ backgroundColor: `${bgColor}22`, borderLeft: `3px solid ${bgColor}` }}
-              >
-                {Math.round(pressure)}
-              </div>
-            );
-          })
-        ) : (
-          <div
-            className={`text-center py-4 ${
-              isDark ? 'text-gray-400' : 'text-gray-500'
-            }`}
-            style={{ gridColumn: '1 / -1' }}
-          >
-            No pressure data available
-          </div>
-        )}
-      </div>
+      {/* Pressure values grid removed for thinner view */}
     </div>
   );
 };
