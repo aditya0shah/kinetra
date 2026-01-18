@@ -32,7 +32,7 @@ class FootSensorDataset(Dataset):
         foot_data = data['matrices'].astype(np.float32)
         foot_data = (self.max_clip - foot_data) / self.max_clip
         foot_data = np.clip(foot_data, 0, 1)
-        
+        foot_data += torch.randn_like(foot_data) * 0.01
         # Label
         label = self.labels_map[str(data['class_label'])]
         
