@@ -35,7 +35,15 @@ except ImportError:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    socketio = SocketIO(
+        app, 
+        cors_allowed_origins="*",
+        ping_timeout=60,
+        ping_interval=25,
+        engineio_logger=False,
+        socketio_logger=False,
+        async_mode='threading'
+    )
     
     # Track active sessions
     active_sessions = {}  # {workout_id: {'connected': bool, 'frame_count': int}}
