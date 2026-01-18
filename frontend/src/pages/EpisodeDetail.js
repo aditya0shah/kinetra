@@ -41,6 +41,7 @@ const EpisodeDetail = () => {
   const [canStart, setCanStart] = useState(true);
   const isStreamActiveRef = useRef(false); // track live streaming lifecycle
   const frameProcessedHandlerRef = useRef(null); // stable WS listener for cleanup
+  const sessionJoinedRef = useRef(false); // gate WS sends until session joined
   // Replay state for completed workouts
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayIndex, setReplayIndex] = useState(0);
@@ -82,6 +83,7 @@ const EpisodeDetail = () => {
 
     // mark stream active
     isStreamActiveRef.current = true;
+    sessionJoinedRef.current = false;
     const workoutId = workout._id || workout.id;
 
     const setupWebSocket = async () => {
@@ -92,6 +94,7 @@ const EpisodeDetail = () => {
 
         // Join session
         await joinSession(workoutId);
+        sessionJoinedRef.current = true;
         console.log('Joined WebSocket session for workout:', workoutId);
 
         // Listen for frame processing responses with stable handler
@@ -125,6 +128,7 @@ const EpisodeDetail = () => {
         // Save for cleanup
         if (!frameProcessedHandlerRef.current) frameProcessedHandlerRef.current = handler;
       } catch (e) {
+        sessionJoinedRef.current = false;
         console.error('Failed to setup WebSocket:', e);
       }
     };
@@ -154,6 +158,10 @@ const EpisodeDetail = () => {
         }]);
 
         // Send to backend via WebSocket for real-time stats calculation
+        if (!sessionJoinedRef.current) {
+          console.warn('WebSocket session not joined yet; skipping frame');
+          return;
+        }
         console.log('>>> Emitting pressure_frame via WebSocket');
         sendPressureFrame(workoutId, matrix, undefined, timestamp);
       } catch (e) {
@@ -184,6 +192,7 @@ const EpisodeDetail = () => {
     // Cleanup on unmount
     return () => {
       isStreamActiveRef.current = false;
+      sessionJoinedRef.current = false;
       if (stopStreamRef.current) {
         stopStreamRef.current();
         stopStreamRef.current = null;
@@ -205,6 +214,7 @@ const EpisodeDetail = () => {
       // 2. Mark stream inactive, remove WS listeners, leave session and disconnect
       const workoutId = workout._id || workout.id;
       isStreamActiveRef.current = false;
+      sessionJoinedRef.current = false;
       if (frameProcessedHandlerRef.current) {
         offFrameProcessed(frameProcessedHandlerRef.current);
         offStatsUpdate(frameProcessedHandlerRef.current); // remove stats listener if set
