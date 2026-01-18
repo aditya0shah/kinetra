@@ -11,7 +11,7 @@ import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
 import { decodeFrameU16 } from '../services/ble';
 import { getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
-import { startOvershootVision, stopOvershootVision } from '../services/overshootVision';
+import { startOvershootVision, stopOvershootVision, sendSkeletonFrameToVLM } from '../services/overshootVision';
 import CONFIG from '../config';
 import { 
   connectWebSocket, 
@@ -140,6 +140,12 @@ const EpisodeDetail = () => {
               ...data.stats
             }]);
             console.log('Stats updated from WebSocket:', data.stats);
+          }
+          
+          // Handle skeleton frame if available and VLM is active
+          if (data && data.skeleton_frame && isVisionActive) {
+            console.log('>>> Received skeleton frame, sending to VLM');
+            sendSkeletonFrameToVLM(data.skeleton_frame);
           }
         };
         frameProcessedHandlerRef.current = handler;

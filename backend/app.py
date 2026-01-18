@@ -30,6 +30,15 @@ except ImportError:
     api = None
     print("Warning: LiveKit not installed. Agent features will be disabled.")
 
+# Skeleton frame generator for VLM integration
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from models.live_skeleton_frame_generator import get_generator
+    skeleton_generator = None
+except ImportError as e:
+    print(f"Warning: Skeleton frame generator not available: {e}")
+    skeleton_generator = None
+
 
 
 def create_app() -> Flask:
@@ -49,6 +58,21 @@ def create_app() -> Flask:
     active_sessions = {}  # {workout_id: {'connected': bool, 'frame_count': int}}
     ema_state = {}  # {workout_id: smoothed_stats}
     EMA_ALPHA = 0.05
+    
+    # Initialize skeleton frame generator
+    global skeleton_generator
+    try:
+        if skeleton_generator is None:
+            model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "best_skeleton_model.pth")
+            if os.path.exists(model_path):
+                skeleton_generator = get_generator(model_path=model_path, device="cpu")
+                print(f"✓ Skeleton frame generator initialized with model: {model_path}")
+            else:
+                print(f"⚠️ Skeleton model not found at {model_path}. Skeleton frames disabled.")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize skeleton generator: {e}")
+        skeleton_generator = None
+    
     EVENT_DEFINITIONS = {
         'region_force_high': {
             'mode': 'per_region_stat',
@@ -360,6 +384,16 @@ def create_app() -> Flask:
                 if workout_id in active_sessions:
                     active_sessions[workout_id]['ema_stats'] = smoothed_stats
 
+            # Generate skeleton frame for VLM if generator is available
+            skeleton_frame_base64 = None
+            if skeleton_generator is not None:
+                try:
+                    skeleton_frame_base64 = skeleton_generator.process_and_render(matrix_array)
+                    if skeleton_frame_base64:
+                        print(f"✓ Generated skeleton frame for workout {workout_id}")
+                except Exception as e:
+                    print(f"⚠️ Error generating skeleton frame: {e}")
+
             # Save pressure data to MongoDB
             events = _get_events_for_save(
                 workout_id,
@@ -381,12 +415,18 @@ def create_app() -> Flask:
             if workout_id in active_sessions:
                 active_sessions[workout_id]['frame_count'] += 1
             
-            emit('frame_processed', {
+            # Prepare response with skeleton frame if available
+            response_data = {
                 'stats': smoothed_stats or calculated_stats,
                 'raw_stats': calculated_stats,
                 'frame_count': active_sessions.get(workout_id, {}).get('frame_count', 0),
                 'timestamp': timestamp
-            }, room=workout_id)
+            }
+            
+            if skeleton_frame_base64:
+                response_data['skeleton_frame'] = skeleton_frame_base64
+            
+            emit('frame_processed', response_data, room=workout_id)
             
         except Exception as e:
             print(f"❌ Error processing pressure frame: {e}")
