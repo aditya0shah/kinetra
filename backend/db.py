@@ -22,11 +22,11 @@ mongodb_available = False
 
 if MONGODB_URI:
     try:
-        # Initialize MongoDB client
-        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+        # Initialize MongoDB client with longer timeout for network issues
+        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000, connectTimeoutMS=10000)
 
-        # Verify connection
-        client.admin.command('ping')
+        # Verify connection with explicit timeout
+        client.admin.command('ping', maxTimeMS=5000)
         print("✓ Connected to MongoDB successfully")
 
         # Database and collections
@@ -50,6 +50,10 @@ def serialize_doc(doc):
         doc = dict(doc)  # Create a copy
         if '_id' in doc:
             doc['_id'] = str(doc['_id'])
+        # Convert datetime objects to ISO format strings
+        for key, value in doc.items():
+            if hasattr(value, 'isoformat'):
+                doc[key] = value.isoformat()
         return doc
     return doc
 

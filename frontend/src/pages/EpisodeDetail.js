@@ -2,30 +2,43 @@ import React, { useContext, useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
-import { FiArrowLeft, FiDownload, FiShare2, FiPause, FiPlay } from 'react-icons/fi';
+import { FiArrowLeft, FiDownload, FiShare2 } from 'react-icons/fi';
 import Header from '../components/Header';
 import FootPressureHeatmap from '../components/FootPressureHeatmap';
-import SkeletonVisualization3D from '../components/SkeletonVisualization3D';
 import TimeSeriesChart from '../components/TimeSeriesChart';
 import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
 import { startMockDeviceStream, convertToMatrix } from '../services/mockdevice';
 import { sendstat, getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
+import { 
+  connectWebSocket, 
+  disconnectWebSocket, 
+  joinSession, 
+  sendPressureFrame, 
+  onFrameProcessed, 
+  offFrameProcessed,
+  onStatsUpdate,
+  offStatsUpdate,
+  leaveSession 
+} from '../services/websocket';
 
 const EpisodeDetail = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
-  const { workouts } = useContext(WorkoutContext);
+  const { hasActiveWorkout, startWorkout, stopWorkout, inProgressWorkoutId } = useContext(WorkoutContext);
   const { id } = useParams();
   const navigate = useNavigate();
   const [workoutDetail, setWorkoutDetail] = useState(null);
   const [pressureData, setPressureData] = useState([]);
   const [statsData, setStatsData] = useState(null);
   const [timeSeriesStats, setTimeSeriesStats] = useState([]); // Accumulate time-series stats for graphing
+  const [pressureMatrixData, setPressureMatrixData] = useState([]); // Accumulate raw pressure matrix data to save to DB
   const stopStreamRef = useRef(null);
-  const [isPaused, setIsPaused] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [canStart, setCanStart] = useState(true);
+  const isStreamActiveRef = useRef(false); // track live streaming lifecycle
+  const frameProcessedHandlerRef = useRef(null); // stable WS listener for cleanup
 
-  const workout = workoutDetail || workouts.find(w => (w._id && w._id === id) || (w.id && w.id === parseInt(id)));
+  const workout = workoutDetail;
 
   // Fetch workout details from backend when navigating to a specific episode
   useEffect(() => {
@@ -42,73 +55,148 @@ const EpisodeDetail = () => {
     return () => { mounted = false; };
   }, [id]);
 
-  // Start/manage mock device stream on component mount and pause state changes
+  // Start/manage mock device stream and WebSocket connection
   useEffect(() => {
-    if (!workout || workout.status !== 'in-progress' || isPaused) {
-      // Stop stream if paused
-      if (stopStreamRef.current) {
-        stopStreamRef.current();
-        stopStreamRef.current = null;
-      }
+    if (!workout || workout.status !== 'in-progress') {
       return;
     }
 
-    const handleDeviceData = async (frameData) => {
-      // Update local pressure visualization with real-time pressure data
-      setPressureData(frameData.nodes);
+    // Check if we should start the stream (and mark workout as in-progress)
+    if (canStart && !hasActiveWorkout()) {
+      startWorkout(workout._id || workout.id);
+      setCanStart(false);
+    } else if (hasActiveWorkout() && (workout._id || workout.id) !== inProgressWorkoutId) {
+      // Another workout is running; show alert
+      alert('Another workout is already in progress. Please complete it first.');
+      navigate('/workouts');
+      return;
+    }
 
-      // Send data to backend for calculation
+    // mark stream active
+    isStreamActiveRef.current = true;
+    const workoutId = workout._id || workout.id;
+
+    const setupWebSocket = async () => {
       try {
-        const matrix = convertToMatrix(frameData);
-        const workoutId = workout._id || workout.id;
-        const response = await sendstat({ matrix, nodes: frameData.nodes, timestamp: frameData.timestamp }, workoutId);
-        
-        // Receive and store calculated stats from backend
-        if (response && response.data && response.data.stats) {
-          setStatsData(response.data.stats);
-          
-          // Accumulate time-series data for graphing
-          setTimeSeriesStats(prev => [...prev, {
-            timestamp: frameData.timestamp || Date.now(),
-            ...response.data.stats
-          }]);
-          
-          console.log('Received calculated stats:', response.data.stats);
-        }
+        // Connect to WebSocket
+        const socket = connectWebSocket();
+        console.log('WebSocket connection initiated');
+
+        // Join session
+        await joinSession(workoutId);
+        console.log('Joined WebSocket session for workout:', workoutId);
+
+        // Listen for frame processing responses with stable handler
+        const handler = (data) => {
+          console.log('>>> Received frame_processed event:', data);
+          if (data && data.stats) {
+            setStatsData(data.stats);
+            setTimeSeriesStats(prev => [...prev, {
+              timestamp: data.timestamp || Date.now(),
+              ...data.stats
+            }]);
+            console.log('Stats updated from WebSocket:', data.stats);
+          }
+        };
+        frameProcessedHandlerRef.current = handler;
+        onFrameProcessed(handler);
+
+        // Listen to MongoDB change stream updates relayed by server
+        const statsHandler = (data) => {
+          console.log('>>> Received stats_update event:', data);
+          if (data && data.stats) {
+            setStatsData(data.stats);
+            setTimeSeriesStats(prev => [...prev, {
+              timestamp: data.timestamp || Date.now(),
+              ...data.stats
+            }]);
+            console.log('Stats updated from MongoDB change stream:', data.stats);
+          }
+        };
+        onStatsUpdate(statsHandler);
+        // Save for cleanup
+        if (!frameProcessedHandlerRef.current) frameProcessedHandlerRef.current = handler;
       } catch (e) {
-        console.warn('Failed to send stats to backend:', e.message);
+        console.error('Failed to setup WebSocket:', e);
       }
     };
 
-    // Start streaming every 250ms (1/4 second) as specified
+    setupWebSocket();
+
+    const handleDeviceData = (frameData) => {
+      if (!isStreamActiveRef.current) return;
+
+      // Update local pressure visualization with real-time pressure data
+      setPressureData(frameData.nodes);
+      console.log('>>> Sending pressure frame to backend:', { nodes: frameData.nodes.length });
+
+      try {
+        const matrix = convertToMatrix(frameData);
+        const timestamp = frameData.timestamp || Date.now();
+
+        // Accumulate raw pressure matrix data to save to MongoDB later
+        setPressureMatrixData(prev => [...prev, {
+          timestamp: timestamp,
+          matrix: matrix,
+          nodes: frameData.nodes
+        }]);
+
+        // Send to backend via WebSocket for real-time stats calculation
+        console.log('>>> Emitting pressure_frame via WebSocket');
+        sendPressureFrame(workoutId, matrix, frameData.nodes, timestamp);
+      } catch (e) {
+        console.error('Failed to send pressure frame:', e);
+      }
+    };
+
+    // Start streaming every 250ms (1/4 second)
     const stop = startMockDeviceStream(handleDeviceData, 250);
     stopStreamRef.current = stop;
 
-    // Cleanup on unmount or when workout completes or paused
+    // Cleanup on unmount
     return () => {
+      isStreamActiveRef.current = false;
       if (stop) stop();
     };
-  }, [workout, isPaused]);
-
-  const handlePauseToggle = () => {
-    setIsPaused(!isPaused);
-  };
+  }, [workout, canStart, hasActiveWorkout, startWorkout, navigate, inProgressWorkoutId]);
 
   const handleCompleteWorkout = async () => {
     if (!workout) return;
     try {
       setIsCompleting(true);
-      const wid = workout._id || workout.id;
-      const updated = await apiUpdateWorkout(wid, { status: 'completed', completedAt: new Date().toISOString() });
-      if (updated) {
-        setWorkoutDetail(updated);
-      } else {
-        setWorkoutDetail({ ...(workoutDetail || workout), status: 'completed', completedAt: new Date().toISOString() });
+
+      // 1. Stop the device stream
+      if (stopStreamRef.current) {
+        stopStreamRef.current();
+        stopStreamRef.current = null;
       }
+
+      // 2. Mark stream inactive, remove WS listeners, leave session and disconnect
+      const workoutId = workout._id || workout.id;
+      isStreamActiveRef.current = false;
+      if (frameProcessedHandlerRef.current) {
+        offFrameProcessed(frameProcessedHandlerRef.current);
+        offStatsUpdate(frameProcessedHandlerRef.current); // remove stats listener if set
+        frameProcessedHandlerRef.current = null;
+      }
+      leaveSession(workoutId);
+      disconnectWebSocket();
+
+      // 3. Stop in-progress tracking globally
+      stopWorkout();
+
+      // 4. Update workout status to completed in MongoDB and save accumulated pressure data
+      await apiUpdateWorkout(workoutId, { 
+        status: 'completed', 
+        completedAt: new Date().toISOString(),
+        timeSeriesData: pressureMatrixData  // Save all accumulated pressure matrix data
+      });
+
+      // 5. Navigate to workouts page
+      navigate('/workouts');
     } catch (e) {
       console.warn('Failed to complete workout:', e.message);
-      alert('Failed to complete workout');
-    } finally {
+      alert('Failed to complete workout. Please try again.');
       setIsCompleting(false);
     }
   };
@@ -154,33 +242,6 @@ const EpisodeDetail = () => {
 
           {/* Controls */}
           <div className="flex items-center gap-3">
-            {workout.status === 'in-progress' && (
-              <button
-                onClick={handlePauseToggle}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
-                  isPaused
-                    ? isDark
-                      ? 'bg-green-900 hover:bg-green-800 text-green-300'
-                      : 'bg-green-100 hover:bg-green-200 text-green-700'
-                    : isDark
-                    ? 'bg-orange-900 hover:bg-orange-800 text-orange-300'
-                    : 'bg-orange-100 hover:bg-orange-200 text-orange-700'
-                }`}
-              >
-                {isPaused ? (
-                  <>
-                    <FiPlay size={20} />
-                    Resume
-                  </>
-                ) : (
-                  <>
-                    <FiPause size={20} />
-                    Pause
-                  </>
-                )}
-              </button>
-            )}
-
             {workout.status !== 'completed' && (
               <button
                 onClick={handleCompleteWorkout}
@@ -194,17 +255,6 @@ const EpisodeDetail = () => {
             )}
           </div>
         </div>
-
-        {/* Pause Indicator */}
-        {isPaused && (
-          <div className={`mb-6 p-4 rounded-lg border-2 text-center ${
-            isDark
-              ? 'bg-orange-900 border-orange-700 text-orange-200'
-              : 'bg-orange-100 border-orange-300 text-orange-800'
-          }`}>
-            <p className="font-semibold">⏸ Workout paused - Data streaming stopped</p>
-          </div>
-        )}
 
         {/* Header Section */}
         <div className={`rounded-lg shadow-lg p-8 mb-8 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
@@ -258,8 +308,6 @@ const EpisodeDetail = () => {
           <FootPressureHeatmap 
             footPressureData={pressureData.length > 0 ? pressureData : workout.footPressureData} 
             isDark={isDark}
-            isPaused={isPaused}
-            onPauseToggle={handlePauseToggle}
           />
 
           {/* Region Stats Display - Shows calculated stats from backend */}
@@ -267,15 +315,6 @@ const EpisodeDetail = () => {
 
           {/* Metrics Graph - Time-series line graphs */}
           <MetricsGraph timeSeriesStats={timeSeriesStats} isDark={isDark} />
-
-          {/* Skeleton Visualization */}
-          {Array.isArray(workout.skeletonData) && workout.skeletonData.length > 0 ? (
-            <SkeletonVisualization3D skeletonData={workout.skeletonData} isDark={isDark} />
-          ) : (
-            <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800 text-gray-300' : 'bg-white text-gray-700'}`}>
-              No skeleton data available for this workout.
-            </div>
-          )}
 
           {/* Heart Rate Time Series */}
           {Array.isArray(workout.timeSeriesData) && workout.timeSeriesData.length > 0 && (

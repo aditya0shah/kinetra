@@ -1,17 +1,31 @@
-import React, { useContext } from 'react';
+import React, { useContext, useState, useEffect } from 'react';
 import { ThemeContext } from '../context/ThemeContext';
-import { WorkoutContext } from '../context/WorkoutContext';
 import { FiTrendingUp, FiBarChart2, FiTarget } from 'react-icons/fi';
 import Header from '../components/Header';
+import { getWorkouts } from '../services/api';
 
 const Analytics = () => {
   const { isDark, toggleTheme } = useContext(ThemeContext);
-  const { workouts } = useContext(WorkoutContext);
+  const [workouts, setWorkouts] = useState([]);
+
+  // Fetch workouts from backend on component mount
+  useEffect(() => {
+    const fetchWorkouts = async () => {
+      try {
+        const data = await getWorkouts();
+        setWorkouts(data || []);
+      } catch (e) {
+        console.warn('Failed to fetch workouts:', e.message);
+        setWorkouts([]);
+      }
+    };
+    fetchWorkouts();
+  }, []);
 
   const totalWorkouts = workouts.length;
-  const totalCalories = workouts.reduce((sum, w) => sum + w.calories, 0);
-  const totalDuration = workouts.reduce((sum, w) => sum + w.duration, 0);
-  const avgHeartRate = Math.round(workouts.reduce((sum, w) => sum + w.avgHeartRate, 0) / workouts.length);
+  const totalCalories = workouts.reduce((sum, w) => sum + (w.calories || 0), 0);
+  const totalDuration = workouts.reduce((sum, w) => sum + (w.duration || 0), 0);
+  const avgHeartRate = workouts.length > 0 ? Math.round(workouts.reduce((sum, w) => sum + (w.avgHeartRate || 0), 0) / workouts.length) : 0;
 
   const stats = [
     { label: 'Total Workouts', value: totalWorkouts, icon: FiTarget },
@@ -65,7 +79,7 @@ const Analytics = () => {
           <div className="space-y-4">
             {workouts.map((workout) => (
               <div
-                key={workout.id}
+                key={workout._id || workout.id}
                 className={`p-4 rounded-lg ${isDark ? 'bg-slate-700' : 'bg-gray-50'}`}
               >
                 <div className="flex items-center justify-between">
@@ -74,7 +88,7 @@ const Analytics = () => {
                       {workout.name}
                     </p>
                     <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {workout.type} • {workout.date.toLocaleDateString()}
+                      {workout.type} • {new Date(workout.date || new Date()).toLocaleDateString()}
                     </p>
                   </div>
                   <div className="text-right">
