@@ -47,6 +47,13 @@ const EpisodeDetail = () => {
   const replayIntervalRef = useRef(null);
 
   const workout = workoutDetail;
+  const replayFrames = workout?.pressure_frames || workout?.timeSeriesData || [];
+
+  const mapFramesToStats = (frames = []) =>
+    frames.map(frame => ({
+      timestamp: frame?.timestamp,
+      ...(frame?.calculated_stats || {}),
+    }));
 
   // Fetch workout details from backend when navigating to a specific episode
   useEffect(() => {
@@ -54,7 +61,15 @@ const EpisodeDetail = () => {
     const fetchDetail = async () => {
       try {
         const detail = await getWorkout(id);
-        if (mounted) setWorkoutDetail(detail);
+        if (!mounted) return;
+        setWorkoutDetail(detail);
+        if (Array.isArray(detail?.pressure_frames) && detail.pressure_frames.length > 0) {
+          setTimeSeriesStats(prev => (prev.length > 0 ? prev : mapFramesToStats(detail.pressure_frames)));
+          const lastStatsFrame = detail.pressure_frames[detail.pressure_frames.length - 1];
+          if (lastStatsFrame?.calculated_stats) {
+            setStatsData(lastStatsFrame.calculated_stats);
+          }
+        }
       } catch (e) {
         console.warn('Failed to fetch workout detail:', e.message);
       }
@@ -243,7 +258,7 @@ const EpisodeDetail = () => {
 
   // Replay handlers for completed workouts
   const handleStartReplay = () => {
-    if (!workout?.timeSeriesData || workout.timeSeriesData.length === 0) {
+    if (!replayFrames || replayFrames.length === 0) {
       alert('No replay data available');
       return;
     }
@@ -261,12 +276,12 @@ const EpisodeDetail = () => {
   };
 
   const handleReplaySeek = (index) => {
-    setReplayIndex(Math.max(0, Math.min(index, (workout?.timeSeriesData?.length || 1) - 1)));
+    setReplayIndex(Math.max(0, Math.min(index, (replayFrames.length || 1) - 1)));
   };
 
   // Replay playback effect
   useEffect(() => {
-    if (!isReplaying || !workout?.timeSeriesData) return;
+    if (!isReplaying || !replayFrames) return;
 
     if (replayIntervalRef.current) {
       clearInterval(replayIntervalRef.current);
@@ -275,7 +290,7 @@ const EpisodeDetail = () => {
     replayIntervalRef.current = setInterval(() => {
       setReplayIndex(prev => {
         const next = prev + 1;
-        if (next >= workout.timeSeriesData.length) {
+        if (next >= replayFrames.length) {
           if (replayIntervalRef.current) {
             clearInterval(replayIntervalRef.current);
             replayIntervalRef.current = null;
@@ -292,18 +307,19 @@ const EpisodeDetail = () => {
         replayIntervalRef.current = null;
       }
     };
-  }, [isReplaying, workout?.timeSeriesData]);
+  }, [isReplaying, replayFrames]);
 
   // Update pressure data during replay
   useEffect(() => {
-    if (isReplaying && workout?.timeSeriesData && workout.timeSeriesData[replayIndex]) {
-      const frame = workout.timeSeriesData[replayIndex];
-      if (frame.matrix) {
-        setPressureData({ frames: [frame.matrix] });
+    if (isReplaying && replayFrames && replayFrames[replayIndex]) {
+      const frame = replayFrames[replayIndex];
+      const matrix = frame?.pressure_matrix || frame?.matrix;
+      if (matrix) {
+        setPressureData({ frames: [matrix] });
         setGridDims({ rows: CONFIG.BLE.ROWS, cols: CONFIG.BLE.COLS });
       }
     }
-  }, [isReplaying, replayIndex, workout?.timeSeriesData]);
+  }, [isReplaying, replayIndex, replayFrames]);
 
   const hasPressureData = Array.isArray(pressureData)
     ? pressureData.length > 0
@@ -353,7 +369,7 @@ const EpisodeDetail = () => {
                 {isCompleting ? 'Completing…' : '✅ Complete Workout'}
               </button>
             )}
-            {workout.status === 'completed' && !isReplaying && workout?.timeSeriesData?.length > 0 && (
+            {workout.status === 'completed' && !isReplaying && replayFrames.length > 0 && (
               <button
                 onClick={handleStartReplay}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
@@ -404,7 +420,7 @@ const EpisodeDetail = () => {
               <div className="space-y-4">
                 <div className="flex items-center gap-4">
                   <span className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Frame {replayIndex + 1} / {workout?.timeSeriesData?.length || 0}
+                    Frame {replayIndex + 1} / {replayFrames.length}
                   </span>
                 </div>
                 
@@ -413,12 +429,12 @@ const EpisodeDetail = () => {
                   <input
                     type="range"
                     min="0"
-                    max={(workout?.timeSeriesData?.length || 1) - 1}
+                    max={(replayFrames.length || 1) - 1}
                     value={replayIndex}
                     onChange={(e) => handleReplaySeek(parseInt(e.target.value))}
                     className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
                     style={{
-                      background: `linear-gradient(to right, ${isDark ? '#3b82f6' : '#2563eb'} 0%, ${isDark ? '#3b82f6' : '#2563eb'} ${((replayIndex) / ((workout?.timeSeriesData?.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} ${((replayIndex) / ((workout?.timeSeriesData?.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} 100%)`
+                      background: `linear-gradient(to right, ${isDark ? '#3b82f6' : '#2563eb'} 0%, ${isDark ? '#3b82f6' : '#2563eb'} ${((replayIndex) / ((replayFrames.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} ${((replayIndex) / ((replayFrames.length || 1) - 1)) * 100}%, ${isDark ? '#374151' : '#e5e7eb'} 100%)`
                     }}
                   />
                 </div>
@@ -426,27 +442,22 @@ const EpisodeDetail = () => {
             </div>
           )}
           
-          {/* Foot Pressure Heatmap */}
-          <FootPressureHeatmap 
-            footPressureData={displayPressureData} 
-            isDark={isDark}
-          />
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+            {/* Foot Pressure Heatmap */}
+            <FootPressureHeatmap 
+              footPressureData={displayPressureData} 
+              isDark={isDark}
+            />
+
+            {/* Metrics Graph - Time-series line graphs */}
+            <div className="w-full">
+              <MetricsGraph timeSeriesStats={timeSeriesStats} isDark={isDark} />
+            </div>
+          </div>
 
           {/* Region Stats Display - Shows calculated stats from backend */}
           <RegionStatsDisplay statsData={statsData} isDark={isDark} />
 
-          {/* Metrics Graph - Time-series line graphs */}
-          <MetricsGraph timeSeriesStats={timeSeriesStats} isDark={isDark} />
-
-          {/* Heart Rate Time Series */}
-          {Array.isArray(workout.timeSeriesData) && workout.timeSeriesData.length > 0 && (
-            <div className={`rounded-lg shadow-lg p-6 ${isDark ? 'bg-slate-800' : 'bg-white'}`}>
-              <h3 className={`text-lg font-semibold mb-4 ${isDark ? 'text-white' : 'text-gray-800'}`}>
-                Heart Rate & Speed Analysis
-              </h3>
-              <TimeSeriesChart data={workout.timeSeriesData} isDark={isDark} />
-            </div>
-          )}
         </div>
       </div>
     </div>
