@@ -7,10 +7,12 @@ module.exports = {
       );
 
       if (sourceMapLoader) {
-        sourceMapLoader.exclude = [
-          ...sourceMapLoader.exclude,
-          /rehype-harden/,
-        ];
+        const currentExcludes = Array.isArray(sourceMapLoader.exclude)
+          ? sourceMapLoader.exclude
+          : sourceMapLoader.exclude
+              ? [sourceMapLoader.exclude]
+              : [];
+        sourceMapLoader.exclude = [...currentExcludes, /rehype-harden/];
       }
 
       return webpackConfig;

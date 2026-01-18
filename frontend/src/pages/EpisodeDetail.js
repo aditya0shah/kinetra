@@ -1,5 +1,6 @@
 import React, { useContext, useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { FiCamera, FiStopCircle } from 'react-icons/fi';
 import { ThemeContext } from '../context/ThemeContext';
 import { WorkoutContext } from '../context/WorkoutContext';
 import { BluetoothContext } from '../context/BluetoothContext';
@@ -10,6 +11,7 @@ import RegionStatsDisplay from '../components/RegionStatsDisplay';
 import MetricsGraph from '../components/MetricsGraph';
 import { decodeFrameU16 } from '../services/ble';
 import { getWorkout, updateWorkout as apiUpdateWorkout } from '../services/api';
+import { startOvershootVision, stopOvershootVision } from '../services/overshootVision';
 import CONFIG from '../config';
 import { 
   connectWebSocket, 
@@ -41,6 +43,13 @@ const EpisodeDetail = () => {
   const isStreamActiveRef = useRef(false); // track live streaming lifecycle
   const frameProcessedHandlerRef = useRef(null); // stable WS listener for cleanup
   const sessionJoinedRef = useRef(false); // gate WS sends until session joined
+  const [isVisionActive, setIsVisionActive] = useState(false);
+  const [isVisionStarting, setIsVisionStarting] = useState(false);
+  const [visionError, setVisionError] = useState(null);
+  const [visionResult, setVisionResult] = useState(null);
+  const visionStreamRef = useRef(null);
+  const visionVideoRef = useRef(null);
+  const visionResultsRef = useRef([]);
   // Replay state for completed workouts
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayIndex, setReplayIndex] = useState(0);
@@ -78,6 +87,15 @@ const EpisodeDetail = () => {
     if (id) fetchDetail();
     return () => { mounted = false; };
   }, [id]);
+
+  useEffect(() => {
+    if (!visionVideoRef.current) return;
+    if (visionStreamRef.current) {
+      visionVideoRef.current.srcObject = visionStreamRef.current;
+    } else {
+      visionVideoRef.current.srcObject = null;
+    }
+  }, [isVisionActive]);
 
   // Start/manage BLE device stream and WebSocket connection
   useEffect(() => {
@@ -230,6 +248,14 @@ const EpisodeDetail = () => {
       const workoutId = workout._id || workout.id;
       isStreamActiveRef.current = false;
       sessionJoinedRef.current = false;
+      if (isVisionActive) {
+        await stopOvershootVision();
+        if (visionStreamRef.current) {
+          visionStreamRef.current.getTracks().forEach(track => track.stop());
+          visionStreamRef.current = null;
+        }
+        setIsVisionActive(false);
+      }
       if (frameProcessedHandlerRef.current) {
         offFrameProcessed(frameProcessedHandlerRef.current);
         offStatsUpdate(frameProcessedHandlerRef.current); // remove stats listener if set
@@ -241,12 +267,20 @@ const EpisodeDetail = () => {
       // 3. Stop in-progress tracking globally
       stopWorkout();
 
+      console.log('visionResultsRef.current', visionResultsRef.current);
+
+      await apiUpdateWorkout(workoutId, {
+        visionResults: visionResultsRef.current
+      });
+
       // 4. Update workout status to completed in MongoDB and save accumulated pressure data
       await apiUpdateWorkout(workoutId, { 
         status: 'completed', 
         completedAt: new Date().toISOString(),
-        timeSeriesData: pressureMatrixData  // Save all accumulated pressure matrix data
+        timeSeriesData: pressureMatrixData,  // Save all accumulated pressure matrix data
+        visionResults: visionResultsRef.current
       });
+
 
       // 5. Navigate to workouts page
       navigate('/workouts');
@@ -256,6 +290,61 @@ const EpisodeDetail = () => {
       setIsCompleting(false);
     }
   };
+
+  const handleToggleVision = async () => {
+    if (isVisionStarting) return;
+    setVisionError(null);
+
+    if (isVisionActive) {
+      setIsVisionStarting(true);
+      try {
+        await stopOvershootVision();
+        if (visionStreamRef.current) {
+          visionStreamRef.current.getTracks().forEach(track => track.stop());
+          visionStreamRef.current = null;
+        }
+        setIsVisionActive(false);
+      } catch (e) {
+        setVisionError(e?.message || 'Failed to stop AI recorder');
+      } finally {
+        setIsVisionStarting(false);
+      }
+      return;
+    }
+
+    setIsVisionStarting(true);
+    try {
+      const { stream } = await startOvershootVision({
+        prompt: 'Read any visible text',
+        onResult: (result) => {
+          const value = result?.result ?? result?.text ?? result;
+          visionResultsRef.current.push(value);
+          setVisionResult(value);
+        },
+        onError: (err) => {
+          console.error('Failed to start AI recorder:', err);
+          setVisionError(err?.message || 'AI recorder error');
+        }
+      });
+      visionStreamRef.current = stream;
+      setIsVisionActive(true);
+    } catch (e) {
+      console.error('Failed to start AI recorder:', e);
+      setVisionError(e?.message || 'Failed to start AI recorder');
+    } finally {
+      setIsVisionStarting(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopOvershootVision();
+      if (visionStreamRef.current) {
+        visionStreamRef.current.getTracks().forEach(track => track.stop());
+        visionStreamRef.current = null;
+      }
+    };
+  }, []);
 
   // Replay handlers for completed workouts
   const handleStartReplay = () => {
@@ -361,6 +450,25 @@ const EpisodeDetail = () => {
           <div className="flex items-center gap-3">
             {workout.status !== 'completed' && (
               <button
+                onClick={handleToggleVision}
+                disabled={isVisionStarting}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                  isVisionActive
+                    ? isDark
+                      ? 'bg-red-700 hover:bg-red-600 text-white'
+                      : 'bg-red-500 hover:bg-red-600 text-white'
+                    : isDark
+                    ? 'bg-slate-700 hover:bg-slate-600 text-white'
+                    : 'bg-white hover:bg-gray-100 text-gray-800'
+                } ${isVisionStarting ? 'opacity-60 cursor-not-allowed' : ''}`}
+                title={isVisionActive ? 'Stop AI recorder' : 'Start AI recorder'}
+              >
+                {isVisionActive ? <FiStopCircle size={18} /> : <FiCamera size={18} />}
+                {isVisionActive ? 'Stop AI Recorder' : 'Start AI Recorder'}
+              </button>
+            )}
+            {workout.status !== 'completed' && (
+              <button
                 onClick={handleCompleteWorkout}
                 disabled={isCompleting}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
@@ -396,6 +504,36 @@ const EpisodeDetail = () => {
             </div>
           </div>
 
+          {workout.status !== 'completed' && (isVisionActive || visionError || visionResult) && (
+            <div className={`mt-4 rounded-lg border p-4 ${isDark ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-gray-50'}`}>
+              <div className="flex items-start gap-4">
+                <div className="w-40 h-28 rounded-lg overflow-hidden bg-black/20">
+                  <video
+                    ref={visionVideoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div className="flex-1">
+                  <p className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-800'}`}>
+                    AI Recorder {isVisionActive ? 'Active' : 'Idle'}
+                  </p>
+                  {visionResult && (
+                    <p className={`mt-2 text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                      {String(visionResult)}
+                    </p>
+                  )}
+                  {visionError && (
+                    <p className="mt-2 text-sm text-red-500">
+                      {visionError}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Main Visualizations */}

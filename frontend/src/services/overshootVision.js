@@ -2,8 +2,8 @@ import { RealtimeVision } from '@overshoot/sdk';
 
 const DEFAULT_CONFIG = {
   apiUrl: 'https://cluster1.overshoot.ai/api/v0.2',
-  apiKey: 'ovs_05cc66b47852ff919396f9507ba190b0',
-  prompt: 'describe the scene in detail',
+  apiKey: "ovs_a783f2aaba2a4906cebbf0e6be249b22",
+  prompt: 'Read any visible text',
 };
 
 let visionInstance = null;
@@ -16,17 +16,11 @@ export const startOvershootVision = async ({ prompt, onResult, onError } = {}) =
   visionInstance = new RealtimeVision({
     apiUrl: DEFAULT_CONFIG.apiUrl,
     apiKey: DEFAULT_CONFIG.apiKey,
-    prompt: prompt || DEFAULT_CONFIG.prompt,
-    backend: 'overshoot',
-    debug: true,
-    onResult,
-    onError,
-    processing: {
-    clip_length_seconds: 0.7,
-    delay_seconds: 0.2,
-    fps: 30,
-    sampling_ratio: 0.85
-  }
+    prompt: 'The user is doing a workout. Describe the workout in detail.',
+    source: { type: 'camera', cameraFacing: 'environment' },
+    onResult: (result) => {
+      if (onResult) onResult(result);
+    }
   });
 
   await visionInstance.start();
