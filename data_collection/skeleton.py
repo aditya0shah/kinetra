@@ -26,19 +26,30 @@ sys.path.insert(0, str(project_root))
 
 from bleak import BleakClient, BleakScanner
 
+from backend.ble import MagicFrameAssembler
+from backend.decode import decode_frame_u16
+
 # BLE UART Service UUIDs (Nordic UART Service)
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # peripheral -> central
 
-
 # === Configuration ===
 DEVICE_NAME = "BLE_Test"  # Device name to search for (falls back to service UUID scan if not found)
 
-NUM_ROWS = 13
-NUM_COLS = 9
+NUM_ROWS = 12
+NUM_COLS = 8
+# Binary frame: magic(2) + frame_id(2) + matrix(12*8*2) = 196 bytes (same as backend/ble.py)
+PAYLOAD_LEN = 4 + NUM_ROWS * NUM_COLS * 2
+MAX_CLIP = 3700.0
 EPISODE_DURATION = 5.0  # seconds
-SAMPLING_RATE = 3.0  # Hz (matrices per second)
+SAMPLING_RATE = 1.6  # Hz (matrices per second)
 MATRICES_PER_EPISODE = int(EPISODE_DURATION * SAMPLING_RATE)  # 15
+
+# Normalization parameters (matching frontend rescaleMatrix)
+IN_MIN = 1000.0
+IN_MAX = 5000.0
+OUT_MIN = 0.0
+OUT_MAX = 100.0
 
 # MediaPipe Configuration
 POSE_MODEL_PATH = "pose_landmarker_heavy.task"  # Path to MediaPipe pose model
@@ -74,60 +85,42 @@ def is_active(r, c):
     return (r, c) not in INACTIVE_COORDS
 
 
-def parse_ble_line(line):
-    """Parse BLE format: R0:val,val,val... (one row per line)"""
-    global latest_matrix, rows_received, frame_complete
+def rescale_matrix(matrix):
+    """
+    Rescale pressure matrix values to match frontend normalization.
     
-    line = line.strip()
-    if not line.startswith('R'):
-        return False
+    Maps values from [700, 3700] to [0, 100] with inversion:
+    - Values <= 0 -> -1
+    - Higher pressure (lower resistance) -> higher output value
+    - Matches frontend rescaleMatrix function
     
-    # Parse format: R0:val1,val2,val3,...
-    try:
-        # Find the colon separator
-        colon_idx = line.find(':')
-        if colon_idx == -1:
-            return False
-        
-        # Extract row number
-        row_str = line[1:colon_idx]  # Skip 'R' and get number
-        r_idx = int(row_str)
-        
-        if r_idx < 0 or r_idx >= NUM_ROWS:
-            return False
-        
-        # Reset row counter if we're starting a new frame (row 0)
-        if r_idx == 0:
-            rows_received = 0
-            frame_complete = False
-        
-        # Extract values after colon
-        values_str = line[colon_idx + 1:]
-        values = values_str.split(',')
-        
-        # Parse column values
-        for c_idx, val_str in enumerate(values):
-            if c_idx >= NUM_COLS:
-                break
-            
-            try:
-                res = float(val_str.strip())
-                latest_matrix[r_idx, c_idx] = res
-            except (ValueError, IndexError):
-                continue
-        
-        rows_received += 1
-        
-        # Mark frame as complete when we have all rows
-        if rows_received >= NUM_ROWS:
-            frame_complete = True
-            rows_received = 0  # Reset for next frame
-            return True
-        
-        return False
-            
-    except (ValueError, IndexError) as e:
-        return False
+    Args:
+        matrix: numpy array of pressure values (can be 2D or 3D)
+    
+    Returns:
+        Rescaled matrix with same shape
+    """
+    in_range = IN_MAX - IN_MIN
+    out_range = OUT_MAX - OUT_MIN
+    
+    # Create output array with same shape
+    result = np.zeros_like(matrix, dtype=np.float32)
+    
+    # Handle values <= 0 -> set to -1
+    mask_invalid = matrix <= 0
+    result[mask_invalid] = -1.0
+    
+    # Scale valid values: ((value - inMin) / inRange) * outRange + outMin
+    mask_valid = ~mask_invalid
+    scaled = ((matrix[mask_valid] - IN_MIN) / in_range) * out_range + OUT_MIN
+    
+    # Clamp to [outMin, outMax]
+    scaled = np.clip(scaled, OUT_MIN, OUT_MAX)
+    
+    # Invert: outMax - scaled (so 3700 -> 0, 700 -> 100)
+    result[mask_valid] = OUT_MAX - scaled
+    
+    return result
 
 
 def collect_episode():
@@ -200,9 +193,12 @@ def save_episode(matrices, pose_landmarks, episode_num):
     filename = f"skeleton_ep{episode_num:02d}_{timestamp}.npz"
     filepath = DATA_DIR / filename
     
+    # Normalize matrices using rescaleMatrix logic
+    matrices_normalized = rescale_matrix(matrices)
+    
     np.savez_compressed(
         filepath,
-        matrices=matrices,  # Shape: (15, 12, 8) - raw foot pressure sensor data
+        matrices=matrices_normalized,  # Shape: (15, 12, 8) - normalized foot pressure sensor data
         pose_landmarks=pose_landmarks,  # Shape: (15, 33, 3) - MediaPipe pose landmarks (x, y, z)
         episode_num=episode_num,
         timestamp=timestamp,
@@ -302,21 +298,14 @@ def run_pose_detection():
         print("Pose detection stopped.")
 
 
-def on_ble_line(line: str):
-    """Process a complete line of BLE data."""
-    global latest_matrix
-    parse_ble_line(line.strip())
-
-
 def start_ble_background_loop():
-    """Run the async BLE stream in a background thread."""
+    """Run the async BLE stream in a background thread. Uses binary protocol (magic 0xBEEF + frame) like backend/ble.py."""
     global ble_connected
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     async def run_ble_stream():
-        """Stream BLE text notifications."""
         global ble_connected
         
         device = None
@@ -352,19 +341,17 @@ def start_ble_background_loop():
         print(f"  Address: {device.address}")
         print("Connecting...")
         
-        buffer = ""
+        assembler = MagicFrameAssembler(PAYLOAD_LEN)
         
         def _handler(sender, data: bytearray):
-            nonlocal buffer
+            global frame_complete
             try:
-                buffer += data.decode('utf-8', errors='ignore')
-                if '\n' in buffer:
-                    lines = buffer.split('\n')
-                    for line in lines[:-1]:
-                        on_ble_line(line.strip())
-                    buffer = lines[-1]
+                for payload in assembler.add_chunk(bytes(data)):
+                    _, arr = decode_frame_u16(payload, min_v=-1.0, max_v=8000.0, rows=NUM_ROWS, cols=NUM_COLS)
+                    latest_matrix[:] = arr
+                    frame_complete = True
             except Exception as e:
-                print(f"Data decoding error: {e}")
+                print(f"BLE decode error: {e}")
         
         try:
             async with BleakClient(device) as client:
