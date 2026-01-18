@@ -1,0 +1,2 @@
+# Augmented foot sensor data from augment_foot_sensor.py
+# Structure mirrors data/raw: raw_augmented/{class}/*_aug.npz

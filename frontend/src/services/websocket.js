@@ -3,6 +3,43 @@ import CONFIG from '../config';
 
 let socket = null;
 
+const waitForConnect = (timeoutMs = 5000) =>
+  new Promise((resolve, reject) => {
+    if (!socket) {
+      reject(new Error('WebSocket not initialized'));
+      return;
+    }
+
+    if (socket.connected) {
+      resolve(socket);
+      return;
+    }
+
+    const onConnect = () => {
+      cleanup();
+      resolve(socket);
+    };
+
+    const onError = (error) => {
+      cleanup();
+      reject(error instanceof Error ? error : new Error('WebSocket connection error'));
+    };
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('WebSocket connection timeout'));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off('connect', onConnect);
+      socket.off('connect_error', onError);
+    };
+
+    socket.once('connect', onConnect);
+    socket.once('connect_error', onError);
+  });
+
 /**
  * Connect to WebSocket server
  * @returns {SocketIOClient.Socket}
@@ -63,28 +100,42 @@ export const disconnectWebSocket = () => {
  * @param {string} workoutId
  * @returns {Promise}
  */
-export const joinSession = (workoutId) => {
+export const joinSession = async (workoutId) => {
+  if (!socket) {
+    throw new Error('WebSocket not initialized');
+  }
+
+  await waitForConnect();
+
   return new Promise((resolve, reject) => {
-    if (!socket || !socket.connected) {
-      reject(new Error('WebSocket not connected'));
-      return;
-    }
+    let settled = false;
+
+    const cleanup = () => {
+      socket.off('session_joined', onJoined);
+      socket.off('error', onError);
+    };
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      handler(value);
+    };
+
+    const onJoined = (data) => finish(resolve, data);
+    const onError = (error) =>
+      finish(reject, error instanceof Error ? error : new Error('WebSocket error'));
+
+    socket.once('session_joined', onJoined);
+    socket.once('error', onError);
 
     socket.emit('join_session', { workout_id: workoutId }, (response) => {
+      if (settled) return;
       if (response && response.error) {
-        reject(new Error(response.error));
+        finish(reject, new Error(response.error));
       } else {
-        resolve(response);
+        finish(resolve, response);
       }
-    });
-
-    // Listen for session_joined event
-    socket.once('session_joined', (data) => {
-      resolve(data);
-    });
-
-    socket.once('error', (error) => {
-      reject(error);
     });
   });
 };
